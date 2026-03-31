@@ -10,15 +10,14 @@ import subprocess
 from datetime import datetime
 from tqdm import tqdm
 import re
-from lion_pytorch import Lion
-from adabelief_pytorch import AdaBelief
+import random
 
 import config
 from dataset import WSDDataset, load_npz_data, load_metadata, collate_wsd_batch
 from models import ConceptClassifier
 from utils import (load_rote_embeddings, create_bidirectional_mappings, 
-                   load_concept_id_to_uk_id, evaluate_with_candidates, 
-                   save_predictions, compute_metrics, create_concept_mask)
+                   load_uk_id_to_concept_id, evaluate_with_candidates, 
+                   save_predictions, compute_metrics, create_concept_mask, map_labels_to_indices)
 from types import SimpleNamespace
 
 try:
@@ -39,18 +38,12 @@ def train_epoch(model, train_loader, optimizer, loss_fn, device):
     for batch in pbar:
         embeddings = batch['embedding'].to(device)
         labels = batch['labels'].to(device)
-        
+        valid_mask = labels != -100
+        if int(valid_mask.sum().item()) == 0:
+            continue
+
         logits = model(embeddings)
-        bs, sl = labels.shape
-        
-        # Reshape for loss computation
-        logits_reshaped = logits.unsqueeze(1).expand(-1, sl, -1).reshape(-1, logits.shape[1])
-
-        labels_reshaped = labels.reshape(-1)
-        
-        loss = loss_fn(logits_reshaped, labels_reshaped)
-
-        loss = loss / sl
+        loss = loss_fn(logits[valid_mask], labels[valid_mask])
         
         optimizer.zero_grad()
         loss.backward()
@@ -62,7 +55,7 @@ def train_epoch(model, train_loader, optimizer, loss_fn, device):
         #         print(name, p.grad.abs().mean().item())
         #         break
                 
-        total_loss += loss.item() * bs
+        total_loss += loss.item() * int(valid_mask.sum().item())
         num_batches += 1
         pbar.set_postfix({'loss': f'{loss.item():.4f}'})
     
@@ -82,17 +75,12 @@ def evaluate(model, eval_loader, loss_fn, device, concept_id_to_index, index_to_
             labels = batch['labels'].to(device)
             candidates = batch['candidates']
             ids = batch['id']
+            valid_mask = labels != -100
             
             logits = model(embeddings)
-            bs, sl = labels.shape
-            
-            # Compute loss
-            logits_reshaped = logits.unsqueeze(1).expand(-1, sl, -1).reshape(-1, logits.shape[1])
-            labels_reshaped = labels.reshape(-1)
-            loss = loss_fn(logits_reshaped, labels_reshaped)
-
-            loss = loss / sl
-            total_loss += loss.item() * bs
+            if int(valid_mask.sum().item()) > 0:
+                loss = loss_fn(logits[valid_mask], labels[valid_mask])
+                total_loss += loss.item() * int(valid_mask.sum().item())
             
             # Get predictions with candidate limiting
             preds = evaluate_with_candidates(logits, candidates, labels, ids, 
@@ -117,7 +105,7 @@ def compile_and_run_scorer():
     return True
 
 
-def evaluate_with_gold_standard(predictions_file, eval_dir, run_name):
+def evaluate_with_gold_standard(predictions_file, eval_dir, run_name, uk_id_to_concept_id):
     """Evaluate predictions against gold standard using Scorer.java.
     
     Args:
@@ -174,14 +162,18 @@ def evaluate_with_gold_standard(predictions_file, eval_dir, run_name):
                 gold_concepts = []
                 for tok in parts[1:]:
                     try:
-                        gold_concepts.append(int(tok))
+                        uk_id = int(tok)
+                        concept_id = uk_id_to_concept_id.get(uk_id)
+                        if concept_id is not None:
+                            gold_concepts.append(int(concept_id))
                     except Exception:
                         # skip non-int tokens
                         pass
 
                 # keep only if we predicted for this id and at least one gold concept exists in embedding
                 if gid in predicted_ids and any((gc in concept_id_to_index) for gc in gold_concepts):
-                    filtered_lines.append(line)
+                    converted_line = " ".join([gid] + [str(gc) for gc in gold_concepts])
+                    filtered_lines.append(converted_line)
 
         filtered_path = os.path.join(filtered_dir, gold_file)
         with open(filtered_path, 'w') as outf:
@@ -225,7 +217,66 @@ def evaluate_with_gold_standard(predictions_file, eval_dir, run_name):
     return results
 
 
-def train(config_dict=None):
+def set_all_seeds(seed):
+    """Set all relevant random seeds for reproducible runs."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+    # Deterministic flags improve reproducibility across repeated runs.
+    if hasattr(torch.backends, 'cudnn'):
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
+def validate_data_alignment(data, metadata):
+    """Fail fast if NPZ arrays and TSV metadata are not aligned."""
+    split_to_keys = {
+        'train': ('train_embeddings', 'train_labels'),
+        'eval': ('eval_embeddings', 'eval_labels'),
+        'test': ('test_embeddings', 'test_labels'),
+    }
+
+    errors = []
+    for split, (emb_k, lbl_k) in split_to_keys.items():
+        emb_n = len(data[emb_k])
+        lbl_n = len(data[lbl_k])
+        ids, cands, _ = metadata[split]
+        meta_n = len(ids)
+
+        if emb_n != lbl_n:
+            errors.append(
+                f"[{split}] NPZ mismatch: {emb_k}={emb_n} but {lbl_k}={lbl_n}"
+            )
+
+        if emb_n != meta_n or lbl_n != meta_n:
+            errors.append(
+                f"[{split}] NPZ/TSV mismatch: embeddings={emb_n}, labels={lbl_n}, metadata={meta_n}"
+            )
+
+        if getattr(data[lbl_k], 'ndim', 1) != 1:
+            errors.append(
+                f"[{split}] expected 1D scalar labels, got shape={data[lbl_k].shape}"
+            )
+
+        if len(cands) != meta_n:
+            errors.append(
+                f"[{split}] metadata mismatch: candidates={len(cands)} but ids={meta_n}"
+            )
+
+    if errors:
+        joined = "\n  - " + "\n  - ".join(errors)
+        raise ValueError(
+            "Data alignment check failed. Your embeddings/labels NPZ is not aligned with TSV splits.\n"
+            "Regenerate embeddings from the same split files before training.\n"
+            f"Details:{joined}"
+        )
+
+
+def train(config_dict=None, seed=None, return_metrics=False):
     """Main training function."""
     
     # Create timestamp for this run
@@ -244,16 +295,34 @@ def train(config_dict=None):
         'momentum': config.MOMENTUM,
         'optim': config.OPTIM,
         'do': config.DROPOUT,
-        'encoder': 'mmbert'
+        'baseline': False,
+        'baseline_type': 'linear',
+        'encoder': 'mmbert',
+        'seed': None,
     }
     
     # Merge with provided config
     for key in default_config:
         if key not in config_dict:
             config_dict[key] = default_config[key]
+
+    if seed is not None:
+        config_dict['seed'] = seed
     
     cf = SimpleNamespace(**config_dict)
+
+    if cf.seed is not None:
+        set_all_seeds(cf.seed)
+
     run_name = f"{run_timestamp}_lr{cf.lr}_wd{cf.weight_decay}_bt{cf.batch_size}_t{cf.temperature}_m{cf.momentum}_{cf.optim}_{cf.encoder}"
+
+    if cf.seed is not None:
+        run_name += f"_seed{cf.seed}"
+    
+    run_name += "_1LAYER_cos"
+    
+    if cf.baseline:
+        run_name += "_baseline_" + cf.baseline_type
     
     # Create timestamped output directory
     output_base = config.OUTPUT_DIR
@@ -274,11 +343,18 @@ def train(config_dict=None):
     # Load mappings
     print("Loading concept mappings...")
     concept_id_to_index, index_to_concept_id = create_bidirectional_mappings()
-    concept_id_to_uk_id = load_concept_id_to_uk_id()
+    uk_id_to_concept_id = load_uk_id_to_concept_id()
     
     print("Loading data...")
     data = load_npz_data(config.DATA_FILE)
     metadata = load_metadata(config.TRAIN_TSV, config.EVAL_TSV, config.TEST_TSV)
+    validate_data_alignment(data, metadata)
+    
+    # Map labels from concept IDs to embedding matrix indices
+    print("Mapping labels to embedding indices...")
+    data['train_labels'] = map_labels_to_indices(data['train_labels'], concept_id_to_index)
+    data['eval_labels'] = map_labels_to_indices(data['eval_labels'], concept_id_to_index)
+    data['test_labels'] = map_labels_to_indices(data['test_labels'], concept_id_to_index)
     
     train_ids, train_cands, train_ans = metadata['train']
     eval_ids, eval_cands, eval_ans = metadata['eval']
@@ -323,9 +399,9 @@ def train(config_dict=None):
     concept_mask = create_concept_mask(train_ans, config.NUM_CONCEPTS, concept_id_to_index)
     concept_mask = concept_mask.to(device)
     print(f"  Concept mask: {concept_mask.sum().item():.0f} / {concept_mask.shape[0]} concepts in training set")
-    
+        
     model = ConceptClassifier(rote_emb, input_dim=config.INPUT_DIM, dropout=cf.do, 
-                             temperature=cf.temperature, concept_mask=concept_mask).to(device)
+                             temperature=cf.temperature, concept_mask=concept_mask, baseline=cf.baseline, baseline_type=cf.baseline_type).to(device)
 
     print("model:")
     print(model)
@@ -343,8 +419,6 @@ def train(config_dict=None):
         optimizer = optim.AdamW(model.parameters(), lr=cf.lr, weight_decay=cf.weight_decay)
     elif cf.optim == 'RAdam':
         optimizer = optim.RAdam(model.parameters(), lr=cf.lr, weight_decay=cf.weight_decay)
-    elif cf.optim == 'AdaBelief':
-        optimizer = AdaBelief(model.parameters(), lr=cf.lr, weight_decay=cf.weight_decay)
     elif cf.optim == 'Adadelta':
         optimizer = optim.Adadelta(model.parameters(), lr=cf.lr, weight_decay=cf.weight_decay)
     elif cf.optim == 'RMSprop':
@@ -368,12 +442,22 @@ def train(config_dict=None):
     
     # Training loop
     print("\nStarting training...")
+    last_train_loss = None
+    last_eval_loss = None
+    last_test_loss = None
+    final_eval_scores = {}
+    final_test_scores = {}
+
     for epoch in range(1, cf.epochs + 1):
         train_loss = train_epoch(model, train_loader, optimizer, loss_fn, device)
         eval_loss, eval_preds = evaluate(model, eval_loader, loss_fn, device, 
                                         concept_id_to_index, index_to_concept_id)
         test_loss, test_preds = evaluate(model, test_loader, loss_fn, device,
                                         concept_id_to_index, index_to_concept_id)
+
+        last_train_loss = train_loss
+        last_eval_loss = eval_loss
+        last_test_loss = test_loss
         
         
         print(f"Epoch {epoch}/{cf.epochs}: "
@@ -392,16 +476,14 @@ def train(config_dict=None):
                 'lr': current_lr,
             })
     
-        # Save model and predictions with uk_id conversion
+        # Save model and predictions in concept id space
         eval_pred_file = os.path.join(run_output_dir, config.EVAL_PREDICTIONS_FILE)
         test_pred_file = os.path.join(run_output_dir, config.TEST_PREDICTIONS_FILE)
         model_file = os.path.join(run_output_dir, config.MODEL_SAVE_PATH)
         
         # torch.save(model.state_dict(), model_file)
-        save_predictions(eval_preds, eval_pred_file, 
-                        concept_id_to_uk_id)
-        save_predictions(test_preds, test_pred_file,
-                        concept_id_to_uk_id)
+        save_predictions(eval_preds, eval_pred_file, concept_id_to_uk_id=None)
+        save_predictions(test_preds, test_pred_file, concept_id_to_uk_id=None)
         
         print(f"\nTraining complete!")
         print(f"Model saved to {model_file}")
@@ -409,8 +491,21 @@ def train(config_dict=None):
         
         # Evaluate against gold standards
         print("\nEvaluating against gold standards...")
-        eval_scores = evaluate_with_gold_standard(eval_pred_file, 'eval-gold-standard', 'Eval Set')
-        test_scores = evaluate_with_gold_standard(test_pred_file, 'test-gold-standard', 'Test Set')
+        eval_scores = evaluate_with_gold_standard(
+            eval_pred_file,
+            config.EVAL_GOLD_STANDARD_DIR,
+            'Eval Set',
+            uk_id_to_concept_id,
+        )
+        test_scores = evaluate_with_gold_standard(
+            test_pred_file,
+            config.TEST_GOLD_STANDARD_DIR,
+            'Test Set',
+            uk_id_to_concept_id,
+        )
+
+        final_eval_scores = eval_scores
+        final_test_scores = test_scores
         
         eval_f1 = eval_scores.get('ALL', {}).get('f1', 0.0)
         scheduler.step(-eval_f1)
@@ -516,6 +611,20 @@ def train(config_dict=None):
 
     if HAS_WANDB and config.USE_WANDB:
         wandb.finish()
+
+    metrics = {
+        'run_name': run_name,
+        'run_output_dir': run_output_dir,
+        'seed': cf.seed,
+        'train_loss': last_train_loss,
+        'eval_loss': last_eval_loss,
+        'test_loss': last_test_loss,
+        'eval_scores': final_eval_scores,
+        'test_scores': final_test_scores,
+    }
+
+    if return_metrics:
+        return model, eval_preds, test_preds, metrics
     
     return model, eval_preds, test_preds
 
