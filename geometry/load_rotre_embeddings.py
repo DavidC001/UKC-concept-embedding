@@ -10,7 +10,6 @@ import numpy as np
 
 def load_state_dict(path: str, map_location='cpu') -> dict:
     sd = torch.load(path, map_location=map_location)
-    sd = sd['model_state_dict']
 
     return sd
 

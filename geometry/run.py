@@ -1,306 +1,278 @@
-"""
-Visualizing the geometry inside the concept embedding
-The code is inspired from the prior work from "THE GEOMETRY OF CATEGORICAL AND HIERARCHICAL CONCEPTS IN LARGE LANGUAGE MODELS"
-https://github.com/KihoPark/LLM_Categorical_Hierarchical_Representations
-"""
+"""Entry point for hierarchy geometry analysis on RoTE embeddings."""
 
 import argparse
-import json
 import os
 from pathlib import Path
 
-import torch
+import numpy as np
 import seaborn as sns
+import torch
 
-from load_rotre_embeddings import (
-    load_embeddings, whiten_embeddings, load_entity_to_index, build_vocab_list
+from common import progress_iter
+from hierarchy import (
+    build_hierarchy_graph,
+    build_node_sets_for_directions,
+    descendant_indices,
+    find_child_by_label,
+    find_root_by_label,
+    graph_roots,
+    load_concepts,
+    validate_concept_id,
 )
-import matplotlib.pyplot as plt
+from load_rotre_embeddings import (
+    build_vocab_list,
+    load_embeddings,
+    load_entity_to_index,
+    whiten_embeddings,
+)
+from metrics import (
+    compute_orthogonality_metrics,
+    compute_projection_feature_stats,
+    cosine_matrix_from_dirs,
+    estimate_dirs,
+    save_json,
+    shortest_path_matrix,
+    write_text_log,
+)
+from visualizations import (
+    plot_animal_plant_subtree,
+    plot_heatmaps,
+    plot_orthogonality_curves,
+    plot_projection_feature_figure,
+    run_visual_2d,
+    run_visual_3d,
+)
 
 
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-
-from category import estimate_single_dir_from_embeddings
-import plotting as rplot
-
-def read_label_maps(rawdata_dir: str):
-    """Read rawdata/animals.json and plants.json to build id->label mapping.
-    Returns a dict mapping original id string -> label lowercased.
-    """
-    mapping = {}
-    for fname in ['animals.json', 'plants.json']:
-        path = Path(rawdata_dir) / fname
-        if not path.exists():
-            continue
-        with open(path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        for cat, content in data.items():
-            children = content.get('children', [])
-            for obj in children:
-                orig_id = str(obj.get('id'))
-                label = obj.get('label')
-                if orig_id and label:
-                    mapping[orig_id] = label.lower()
-    return mapping
+sns.set_theme(context="paper", style="white", palette="colorblind", font="DejaVu Sans")
 
 
-def ids_from_raw_category(data, category_name):
-    cats = data.get(category_name, {})
-    children = cats.get('children', [])
-    return [str(c['id']) for c in children if 'id' in c]
-
-
-def main(args):
-    ckpt = args.checkpoint
-    if not os.path.exists(ckpt):
-        raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
+def main(args: argparse.Namespace) -> None:
+    os.makedirs(args.output_dir, exist_ok=True)
+    out_dir = Path(args.output_dir)
 
     ent2idx = load_entity_to_index(args.entity_to_id)
+    emb = load_embeddings(args.checkpoint, map_location="cpu")
+    g_whitened, _, _ = whiten_embeddings(emb)
 
-    emb = load_embeddings(ckpt, map_location='cpu')
-    g, mean, inv_sqrt = whiten_embeddings(emb)
-    vocab_list = build_vocab_list(emb.shape[0], ent2idx, id_to_label=read_label_maps(args.rawdata_dir))
+    perm = torch.randperm(g_whitened.shape[0], generator=torch.Generator().manual_seed(args.seed))
+    g_shuffled = g_whitened[perm]
 
-    with open(os.path.join(args.rawdata_dir, 'animals.json'), 'r') as f:
-        animals_json = json.load(f)
-    with open(os.path.join(args.rawdata_dir, 'plants.json'), 'r') as f:
-        plants_json = json.load(f)
+    concepts_df = load_concepts(args.concepts_csv)
+    hgraph = build_hierarchy_graph(args.concept_relations_csv, relation_type=args.hierarchy_relation_type)
+    roots = graph_roots(hgraph)
 
-    categories = ['mammal', 'bird', 'reptile', 'fish', 'amphibian']
-
-    animals_indices = {}
-    animals_ids = {}
-    for cat in categories:
-        ids = ids_from_raw_category(animals_json, cat)
-        mapped = [ent2idx[s] for s in ids if s in ent2idx]
-        animals_indices[cat] = mapped
-        animals_ids[cat] = ids
-
-    all_animals_ids = [s for cat in categories for s in ids_from_raw_category(animals_json, cat)]
-    all_animals_mapped = [ent2idx[s] for s in all_animals_ids if s in ent2idx]
-    animals_indices['animal'] = all_animals_mapped
-
-    plant_ids_all = []
-    for k, v in plants_json.items():
-        for child in v.get('children', []):
-            plant_ids_all.append(str(child.get('id')))
-    plant_mapped = [ent2idx[s] for s in plant_ids_all if s in ent2idx]
-
-    index_to_label = vocab_list
-
-    dirs = {}
-    for cat, idxs in animals_indices.items():
-        if len(idxs) == 0:
-            # no mapped entities 
-            continue
-        tensors = g[idxs]
-        lda_dir, mean_dir = estimate_single_dir_from_embeddings(tensors)
-        dirs[cat] = {'lda': lda_dir, 'mean': mean_dir}
-
-    if len(plant_mapped) > 0:
-        plant_tensors = g[plant_mapped]
-        lda_dir_plant, mean_plant = estimate_single_dir_from_embeddings(plant_tensors)
-        dirs_plants = {'lda': lda_dir_plant, 'mean': mean_plant}
+    if args.animal_root_id is not None:
+        animal_root = validate_concept_id(concepts_df, args.animal_root_id, expected_label=args.animal_label)
     else:
-        dirs_plants = None
+        animal_root = find_root_by_label(concepts_df, args.animal_label)
 
-    os.makedirs(args.output_dir, exist_ok=True)
+    if args.plant_root_id is not None:
+        plant_root = validate_concept_id(concepts_df, args.plant_root_id, expected_label=args.plant_label)
+    else:
+        plant_root = find_root_by_label(concepts_df, args.plant_label)
 
-    fig, axs = plt.subplots(1, 3, figsize=(25, 7))
+    node_members = {}
+    roots_iter = progress_iter(
+        roots,
+        enabled=(not args.no_progress),
+        desc="Building hierarchy node sets",
+        total=len(roots),
+    )
+    for r in roots_iter:
+        node_members.update(build_node_sets_for_directions(hgraph, r, min_size=args.min_category_size))
 
-    inds0 = {'animal': animals_indices['animal'], 'mammal': animals_indices.get('mammal', [])}
-    dir1 = dirs['animal']['lda']
-    dir2 = dirs['mammal']['lda']
+    dirs_original = estimate_dirs(g_whitened, ent2idx, node_members, show_progress=(not args.no_progress))
+    dirs_shuffled = estimate_dirs(g_shuffled, ent2idx, node_members, show_progress=(not args.no_progress))
 
-    inds0 = {'animal': animals_indices['animal'], 'mammal': animals_indices.get('mammal', [])}
-    inds1 = {'animal': animals_indices['animal'], 'mammal': animals_indices['mammal'], 'bird': animals_indices['bird']}
-    inds2 = {'plant': plant_mapped, 'animal': animals_indices['animal'], 'mammal': animals_indices['mammal'], 'bird': animals_indices['bird']}
+    sorted_nodes = sorted([n for n in node_members.keys() if n in dirs_original and n in dirs_shuffled])
 
-    unique_labels = list(dict.fromkeys(list(inds0.keys()) + list(inds1.keys()) + list(inds2.keys())))
+    cos_lda_original, kept_nodes = cosine_matrix_from_dirs(sorted_nodes, dirs_original, version="lda")
+    cos_lda_shuffled, _ = cosine_matrix_from_dirs(sorted_nodes, dirs_shuffled, version="lda")
+    dist_prox = shortest_path_matrix(hgraph, kept_nodes)
 
-    custom_colors = ['#f64369', '#2aab8c', '#48d1e8', '#5170ff']
+    plot_heatmaps(
+        out_dir / "heatmap_hierarchy_lda.png",
+        dist_prox,
+        cos_lda_original,
+        cos_lda_shuffled,
+        title_prefix="Hierarchy",
+    )
 
-    category_colors = {lab: custom_colors[i] for i, lab in enumerate(unique_labels)}
+    metrics = compute_orthogonality_metrics(
+        hgraph=hgraph,
+        sorted_nodes=kept_nodes,
+        dirs_original=dirs_original,
+        dirs_shuffled=dirs_shuffled,
+        version="lda",
+        seed=args.seed,
+        show_progress=(not args.no_progress),
+    )
 
-    rplot.proj_2d(dir1, dir2, g, index_to_label, axs[0], is_plain=True, double=False, higher1=None, subcat1=None, normalize=True, orthogonal=True,
-                added_inds=inds0, category_colors=category_colors, k=200, fontsize=12, draw_arrows=True,
-                arrow1_name='animal', arrow2_name='mammal', alpha=0.03, s=0.05,
-                target_alpha=0.6, target_s=4, xlim=(-7, 7), ylim=(-7, 7),
-                left_topk=False, bottom_topk=False, right_topk=False, top_topk=False,
-                xlabel='', ylabel='', title='animal vs mammal')
-    
+    plot_orthogonality_curves(
+        out_dir / "hier_orthogonality_b.png",
+        metrics,
+        key="b",
+        title=r"cos(l_w - l_parent, l_parent)",
+    )
+    plot_orthogonality_curves(
+        out_dir / "hier_orthogonality_e.png",
+        metrics,
+        key="e",
+        title=r"cos(l_w - l_parent, l_parent - l_grandparent)",
+    )
 
-    inds1 = {'animal': animals_indices['animal'], 'mammal': animals_indices['mammal'], 'bird': animals_indices['bird']}
-    higher = dirs['animal']['lda']
-    subcat1 = dirs['mammal']['lda']
-    subcat2 = dirs['bird']['lda']
+    proj_stats = compute_projection_feature_stats(
+        g_whitened=g_whitened,
+        g_shuffled=g_shuffled,
+        ent2idx=ent2idx,
+        node_members=node_members,
+        feature_nodes=kept_nodes,
+        seed=args.seed,
+        train_ratio=args.feature_train_ratio,
+        random_sample_size=args.feature_random_sample_size,
+    )
+    plot_projection_feature_figure(out_dir / "feature_projection_figure3_style.png", proj_stats)
 
-    rplot.proj_2d_single_diff(higher, subcat1, subcat2, g, index_to_label, axs[1], normalize=True, orthogonal=True,
-                             added_inds=inds1, category_colors=category_colors, k=50, fontsize=12, draw_arrows=True,
-                             arrow1_name='animal', arrow2_name='bird - mammal', alpha=0.03, s=0.05,
-                             target_alpha=0.6, target_s=4, xlim=(-7, 7), ylim=(-7, 7), right_topk=False,
-                             left_topk=False, top_topk=False, bottom_topk=False, xlabel='', ylabel='',
-                             title='animal vs mammal => bird')
+    id_to_label = {str(int(r.id)): str(r.label).lower() for r in concepts_df.itertuples(index=False)}
+    vocab_list = build_vocab_list(emb.shape[0], ent2idx, id_to_label=id_to_label)
 
-    inds2 = {'plant': plant_mapped, 'animal': animals_indices['animal'], 'mammal': animals_indices['mammal'], 'bird': animals_indices['bird']}
-    higher1 = dirs_plants['lda'] if dirs_plants else None
-    higher2 = dirs['animal']['lda']
+    mammals_id = find_child_by_label(hgraph, concepts_df, animal_root, "mammal")
+    birds_id = find_child_by_label(hgraph, concepts_df, animal_root, "bird")
+    fish_id = find_child_by_label(hgraph, concepts_df, animal_root, "fish")
+    reptile_id = find_child_by_label(hgraph, concepts_df, animal_root, "reptile")
 
-    rplot.proj_2d_double_diff(higher1, higher2, subcat1, subcat2, g, index_to_label, axs[2], normalize=True,
-                             orthogonal=True, added_inds=inds2, category_colors=category_colors, k=50, fontsize=12, draw_arrows=True,
-                             arrow1_name='animal - plant', arrow2_name='bird - mammal', alpha=0.03, s=0.05,
-                             target_alpha=0.6, target_s=4, xlim=(-7, 7), ylim=(-7, 7), right_topk=False,
-                             left_topk=False, top_topk=False, bottom_topk=False, xlabel='', ylabel='',
-                             title='plant -> animal vs mammal -> bird')
+    ids = {
+        "animal": animal_root,
+        "plant": plant_root,
+        "mammal": mammals_id,
+        "bird": birds_id,
+        "fish": fish_id,
+        "reptile": reptile_id,
+    }
 
-    fig.tight_layout()
-    fig.savefig(os.path.join(args.output_dir, 'three_2d_plots_rotre.png'), dpi=300, bbox_inches='tight')
-    plt.show()
+    missing = [k for k, v in ids.items() if v not in dirs_original]
+    if missing:
+        raise RuntimeError(
+            "Missing directional estimates for: " + ", ".join(missing) +
+            ". Try lowering --min_category_size."
+        )
 
-    # 3D plots
-    fig = plt.figure(figsize=(20, 8))
-    ax = fig.add_subplot(121, projection='3d')
+    idx_sets = {
+        "animal": descendant_indices(animal_root, hgraph, ent2idx),
+        "plant": descendant_indices(plant_root, hgraph, ent2idx),
+        "mammal": descendant_indices(mammals_id, hgraph, ent2idx),
+        "bird": descendant_indices(birds_id, hgraph, ent2idx),
+        "fish": descendant_indices(fish_id, hgraph, ent2idx),
+        "reptile": descendant_indices(reptile_id, hgraph, ent2idx),
+    }
 
-    cat1 = 'mammal'; cat2 = 'bird'; cat3 = 'fish'
-    dir1 = dirs[cat1]['lda']; dir2 = dirs[cat2]['lda']; dir3 = dirs[cat3]['lda']
-    higher_dir = dirs['animal']['lda']
+    run_visual_2d(
+        out_dir / "three_2d_plots_rotre_hierarchy.png",
+        g_whitened,
+        vocab_list,
+        idx_sets,
+        dirs_original,
+        ids,
+    )
 
-    xaxis = dir1 / dir1.norm()
-    yaxis = dir2 - (dir2 @ xaxis) * xaxis
-    yaxis = yaxis / yaxis.norm()
-    zaxis = dir3 - (dir3 @ xaxis) * xaxis - (dir3 @ yaxis) * yaxis
-    zaxis = zaxis / zaxis.norm()
-    axes = torch.stack([xaxis, yaxis, zaxis], dim=1)
+    run_visual_3d(
+        out_dir / "two_3d_plots_rotre_hierarchy.png",
+        g_whitened,
+        idx_sets,
+        dirs_original,
+        ids,
+    )
 
-    ind1 = animals_indices['mammal']
-    ind2 = animals_indices['bird']
-    ind3 = animals_indices['fish']
+    plot_animal_plant_subtree(
+        out_dir / "animal_plant_subtrees.png",
+        hgraph,
+        concepts_df,
+        animal_root,
+        plant_root,
+        depth=args.subtree_depth,
+    )
 
-    g1 = g[ind1]
-    g2 = g[ind2]
-    g3 = g[ind3]
+    metrics_summary = {
+        "num_total_nodes_with_members": len(node_members),
+        "num_nodes_with_dirs_original": len(dirs_original),
+        "num_nodes_used_for_metrics": len(kept_nodes),
+        "animal_root": int(animal_root),
+        "plant_root": int(plant_root),
+        "mammal_node": int(mammals_id),
+        "bird_node": int(birds_id),
+        "fish_node": int(fish_id),
+        "reptile_node": int(reptile_id),
+        "orthogonality": {
+            "b": {
+                "original_parent": float(np.mean(metrics["b"]["original_parent"])) if metrics["b"]["original_parent"] else None,
+                "original_random_parent": float(np.mean(metrics["b"]["original_random_parent"])) if metrics["b"]["original_random_parent"] else None,
+                "shuffled_parent": float(np.mean(metrics["b"]["shuffled_parent"])) if metrics["b"]["shuffled_parent"] else None,
+            },
+            "e": {
+                "original_parent": float(np.mean(metrics["e"]["original_parent"])) if metrics["e"]["original_parent"] else None,
+                "original_random_parent": float(np.mean(metrics["e"]["original_random_parent"])) if metrics["e"]["original_random_parent"] else None,
+                "shuffled_parent": float(np.mean(metrics["e"]["shuffled_parent"])) if metrics["e"]["shuffled_parent"] else None,
+            },
+        },
+        "feature_projection": {
+            "num_features": len(proj_stats.get("nodes", [])),
+            "original_train_mean_global": float(np.mean(proj_stats["original"]["train_mean"])) if proj_stats["original"]["train_mean"] else None,
+            "original_test_mean_global": float(np.mean(proj_stats["original"]["test_mean"])) if proj_stats["original"]["test_mean"] else None,
+            "original_random_mean_global": float(np.mean(proj_stats["original"]["random_mean"])) if proj_stats["original"]["random_mean"] else None,
+            "shuffled_train_mean_global": float(np.mean(proj_stats["shuffled"]["train_mean"])) if proj_stats["shuffled"]["train_mean"] else None,
+            "shuffled_test_mean_global": float(np.mean(proj_stats["shuffled"]["test_mean"])) if proj_stats["shuffled"]["test_mean"] else None,
+            "shuffled_random_mean_global": float(np.mean(proj_stats["shuffled"]["random_mean"])) if proj_stats["shuffled"]["random_mean"] else None,
+        },
+    }
+    save_json(out_dir / "metrics_summary.json", metrics_summary)
 
-    proj1 = (g1 @ axes).cpu().numpy()
-    proj2 = (g2 @ axes).cpu().numpy()
-    proj3 = (g3 @ axes).cpu().numpy()
-    proj = (g @ axes).cpu().numpy()
+    # Full run log for easier experiment tracking.
+    log_lines = [
+        "Geometry run result log",
+        "",
+        f"Output dir: {out_dir}",
+        f"Nodes with members: {len(node_members)}",
+        f"Nodes with directions: {len(dirs_original)}",
+        f"Nodes used for metrics: {len(kept_nodes)}",
+        "",
+        "Orthogonality means (kept lines only):",
+        f"B original: {metrics_summary['orthogonality']['b']['original_parent']}",
+        f"B original+random: {metrics_summary['orthogonality']['b']['original_random_parent']}",
+        f"B shuffled: {metrics_summary['orthogonality']['b']['shuffled_parent']}",
+        f"E original: {metrics_summary['orthogonality']['e']['original_parent']}",
+        f"E original+random: {metrics_summary['orthogonality']['e']['original_random_parent']}",
+        f"E shuffled: {metrics_summary['orthogonality']['e']['shuffled_parent']}",
+        "",
+        "Figure-3-style projection global means:",
+        f"Original train/test/random: {metrics_summary['feature_projection']['original_train_mean_global']}, {metrics_summary['feature_projection']['original_test_mean_global']}, {metrics_summary['feature_projection']['original_random_mean_global']}",
+        f"Shuffled train/test/random: {metrics_summary['feature_projection']['shuffled_train_mean_global']}, {metrics_summary['feature_projection']['shuffled_test_mean_global']}, {metrics_summary['feature_projection']['shuffled_random_mean_global']}",
+    ]
+    write_text_log(out_dir / "results_log.txt", log_lines)
 
-    P1 = (dir1 @ axes).cpu().numpy()
-    P2 = (dir2 @ axes).cpu().numpy()
-    P3 = (dir3 @ axes).cpu().numpy()
-    P4 = (higher_dir @ axes).cpu().numpy()
-
-    # scatter and arrows
-    ax.scatter(P1[0], P1[1], P1[2], color='#f64369', s=100)
-    ax.scatter(P2[0], P2[1], P2[2], color='#2aab8c', s=100)
-    ax.scatter(P3[0], P3[1], P3[2], color='#48d1e8', s=100)
-
-    verts = [list(zip([P1[0], P2[0], P3[0]], [P1[1], P2[1], P3[1]], [P1[2], P2[2], P3[2]]))]
-    triangle = Poly3DCollection(verts, alpha=.2, linewidths=1, linestyle='--', edgecolors='#5170ff')
-    triangle.set_facecolor('#ffb700')
-    ax.add_collection3d(triangle)
-
-    ax.quiver(0, 0, 0, P1[0], P1[1], P1[2], color='#f64369', arrow_length_ratio=0.01)
-    ax.quiver(0, 0, 0, P2[0], P2[1], P2[2], color='#2aab8c', arrow_length_ratio=0.01)
-    ax.quiver(0, 0, 0, P3[0], P3[1], P3[2], color='#48d1e8', arrow_length_ratio=0.01)
-    ax.quiver(0, 0, 0, P4[0], P4[1], P4[2], color='#5170ff', arrow_length_ratio=0.1, linewidth=2)
-
-    ax.scatter(proj1[:, 0], proj1[:, 1], proj1[:, 2], c='#f64369', label=cat1)
-    ax.scatter(proj2[:, 0], proj2[:, 1], proj2[:, 2], c='#2aab8c', label=cat2)
-    ax.scatter(proj3[:, 0], proj3[:, 1], proj3[:, 2], c='#48d1e8', label=cat3)
-    ax.scatter(proj[:, 0], proj[:, 1], proj[:, 2], c='grey', s=0.05, alpha=0.03)
-
-
-    scale = 1.2
-    ax.text(P1[0]*scale + 2, P1[1]* scale, P1[2]*scale, cat1, bbox=dict(facecolor='#f64369', alpha=0.2))
-    ax.text(P2[0]*scale+0.5, P2[1]* scale+0.5, P2[2]*scale, cat2, bbox=dict(facecolor='#2aab8c', alpha=0.2))
-    ax.text(P3[0]*scale, P3[1]* scale, P3[2]*scale, cat3, bbox=dict(facecolor='#48d1e8', alpha=0.2))
-    ax.text(P4[0]-0.6, P4[1]-0.6, P4[2], rf'$\bar{{\ell}}_{{animal}}$', bbox=dict(facecolor='#5170ff', alpha=0.2))
-
-    ax.view_init(elev=20, azim=75)
-
-    ax = fig.add_subplot(122, projection='3d')
-    cat4 = 'reptile'
-    dir4 = dirs[cat4]['lda']
-
-    xaxis = (dir2 - dir1) / (dir2 - dir1).norm()
-    yaxis = dir3 - dir1 - (dir3 - dir1) @ xaxis * xaxis
-    yaxis = yaxis / yaxis.norm()
-    zaxis = (dir4 - dir1) - (dir4 - dir1) @ xaxis * xaxis - (dir4 - dir1) @ yaxis * yaxis
-    zaxis = zaxis / zaxis.norm()
-    axes = torch.stack([xaxis, yaxis, zaxis], dim=1)
-
-    ind4 = animals_indices['reptile']
-    g4 = g[ind4]
-
-    proj1 = (g[ind1] @ axes).cpu().numpy()
-    proj2 = (g[ind2] @ axes).cpu().numpy()
-    proj3 = (g[ind3] @ axes).cpu().numpy()
-    proj4 = (g4 @ axes).cpu().numpy()
-    proj = (g @ axes).cpu().numpy()
-
-    P1 = (dir1 @ axes).cpu().numpy()
-    P2 = (dir2 @ axes).cpu().numpy()
-    P3 = (dir3 @ axes).cpu().numpy()
-    P4 = (dir4 @ axes).cpu().numpy()
-
-    ax.scatter(P1[0], P1[1], P1[2], color='#f64369', s=100)
-    ax.scatter(P2[0], P2[1], P2[2], color='#2aab8c', s=100)
-    ax.scatter(P3[0], P3[1], P3[2], color='#48d1e8', s=100)
-    ax.scatter(P4[0], P4[1], P4[2], color='#5170ff', s=100)
-
-    # some polygons
-    verts1 = [list(zip([P1[0], P2[0], P3[0]], [P1[1], P2[1], P3[1]], [P1[2], P2[2], P3[2]]))]
-    triangle1 = Poly3DCollection(verts1, alpha=.1, linewidths=1, linestyle='--', edgecolors='#5170ff')
-    triangle1.set_facecolor('#ffb700')
-    ax.add_collection3d(triangle1)
-
-    verts2 = [list(zip([P1[0], P2[0], P4[0]], [P1[1], P2[1], P4[1]], [P1[2], P2[2], P4[2]]))]
-    triangle2 = Poly3DCollection(verts2, alpha=.2, linewidths=1, linestyle='--', edgecolors='#5170ff')
-    triangle2.set_facecolor('#ffb700')
-    ax.add_collection3d(triangle2)
-
-    verts3 = [list(zip([P1[0], P3[0], P4[0]], [P1[1], P3[1], P4[1]], [P1[2], P3[2], P4[2]]))]
-    triangle3 = Poly3DCollection(verts3, alpha=.1, linewidths=1, linestyle =  "--", edgecolors='#5170ff')
-    triangle3.set_facecolor('#ffb700')
-    ax.add_collection3d(triangle3)
-
-    verts4 = [list(zip([P2[0], P3[0], P4[0]], [P2[1], P3[1], P4[1]], [P2[2], P3[2], P4[2]]))]
-    triangle4 = Poly3DCollection(verts4, alpha=.1, linewidths=1, linestyle =  "--", edgecolors='#5170ff')
-    triangle4.set_facecolor('#ffb700')
-    ax.add_collection3d(triangle4)
-
-    ax.quiver(0, 0, 0, P1[0], P1[1], P1[2], color='#f64369', arrow_length_ratio=0.01)
-    ax.quiver(0, 0, 0, P2[0], P2[1], P2[2], color='#2aab8c', arrow_length_ratio=0.01)
-    ax.quiver(0, 0, 0, P3[0], P3[1], P3[2], color='#48d1e8', arrow_length_ratio=0.01)
-    ax.quiver(0, 0, 0, P4[0], P4[1], P4[2], color='#5170ff', arrow_length_ratio=0.01)
-
-
-    ax.scatter(proj1[:, 0], proj1[:, 1], proj1[:, 2], c='#f64369', label=cat1)
-    ax.scatter(proj2[:, 0], proj2[:, 1], proj2[:, 2], c='#2aab8c', label=cat2)
-    ax.scatter(proj3[:, 0], proj3[:, 1], proj3[:, 2], c='#48d1e8', label=cat3)
-    ax.scatter(proj4[:, 0], proj4[:, 1], proj4[:, 2], c='#5170ff', label=cat4)
-    ax.scatter(proj[:, 0], proj[:, 1], proj[:, 2], c='gray', s=0.05, alpha=0.01)
-
-    scale = 1.4
-    scale2 = 1.2
-    ax.text(P1[0]*scale-1, P1[1]* scale, P1[2]*scale, cat1, bbox=dict(facecolor='#f64369', alpha=0.2))
-    ax.text(P2[0]*scale+1, P2[1]* scale, P2[2]*scale, cat2, bbox=dict(facecolor='#2aab8c', alpha=0.2))
-    ax.text(P3[0]*scale-1, P3[1]* scale, P3[2]*scale, cat3, bbox=dict(facecolor='#48d1e8', alpha=0.2))
-    ax.text(P4[0]*scale2+2, P4[1]* scale2, P4[2]*scale2-1, cat4, bbox=dict(facecolor='#5170ff', alpha=0.2))
-
-
-    plt.tight_layout()
-    fig.savefig(os.path.join(args.output_dir, 'two_3d_plots_rotre.png'), dpi=300, bbox_inches='tight')
-    plt.show()
+    print("Saved outputs to:", out_dir)
 
 
-if __name__ == '__main__':
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--checkpoint', type=str, default='RotE_model_20251201_144211_best.pt')
-    parser.add_argument('--entity_to_id', type=str, default='UKC_CUT_1_hyp_t/entity_to_id.pickle')
-    parser.add_argument('--rawdata_dir', type=str, default='rawdata')
-    parser.add_argument('--output_dir', type=str, default='figures')
-    args = parser.parse_args()
+    parser.add_argument("--checkpoint", type=str, default="dataset/RotE/model.pt")
+    parser.add_argument("--entity_to_id", type=str, default="dataset/RotE/entity_to_id.pickle")
+    parser.add_argument("--concepts_csv", type=str, default="dataset/concepts.csv")
+    parser.add_argument("--concept_relations_csv", type=str, default="dataset/concept_relations.csv")
+    parser.add_argument("--hierarchy_relation_type", type=int, default=20)
+    parser.add_argument("--animal_root_id", type=int, default=37)
+    parser.add_argument("--plant_root_id", type=int, default=38)
+    parser.add_argument("--animal_label", type=str, default="animal")
+    parser.add_argument("--plant_label", type=str, default="plant")
+    parser.add_argument("--min_category_size", type=int, default=25)
+    parser.add_argument("--subtree_depth", type=int, default=3)
+    parser.add_argument("--seed", type=int, default=100)
+    parser.add_argument("--output_dir", type=str, default="geometry/figures")
+    parser.add_argument("--feature_train_ratio", type=float, default=0.8)
+    parser.add_argument("--feature_random_sample_size", type=int, default=20000)
+    parser.add_argument("--no_progress", action="store_true", help="Disable tqdm progress bars")
+    return parser
 
-    main(args)
+
+if __name__ == "__main__":
+    main(build_parser().parse_args())
