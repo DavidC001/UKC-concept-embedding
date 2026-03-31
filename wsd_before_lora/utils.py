@@ -6,6 +6,9 @@ import pickle
 import pandas as pd
 
 import torch
+import numpy as np
+
+from config import ROTE_MODEL, DATA_FILE, TRAIN_TSV, EVAL_TSV, TEST_TSV, DATASET_DIR
 
 def load_rote_embeddings(model_path):
     """Load RotE concept embeddings."""
@@ -14,7 +17,7 @@ def load_rote_embeddings(model_path):
     return embeddings
 
 
-def load_entity_to_idx(pickle_path='dataset/entity_to_id.pickle'):
+def load_entity_to_idx(pickle_path= DATASET_DIR + '/entity_to_id.pickle'):
     """Load entity ID to index mapping.
     
     Returns:
@@ -24,7 +27,7 @@ def load_entity_to_idx(pickle_path='dataset/entity_to_id.pickle'):
         return pickle.load(f)
 
 
-def create_bidirectional_mappings(pickle_path='dataset/entity_to_id.pickle'):
+def create_bidirectional_mappings(pickle_path= DATASET_DIR + '/entity_to_id.pickle'):
     """Create bidirectional mappings between concept IDs and indices.
     
     Returns:
@@ -38,14 +41,30 @@ def create_bidirectional_mappings(pickle_path='dataset/entity_to_id.pickle'):
     return concept_id_to_index, index_to_concept_id
 
 
-def load_concept_id_to_uk_id(csv_path='dataset/concepts.csv'):
+def load_concept_id_to_uk_id(csv_path= DATASET_DIR + '/concepts.csv'):
     """Load mapping from concept ID to uk_id.
     
     Returns:
         concept_id_to_uk_id: dict mapping concept_id → uk_id
     """
     df = pd.read_csv(csv_path)
-    return dict(zip(df['id'], df['uk_id']))
+    id_col = pd.to_numeric(df['id'], errors='coerce')
+    uk_col = pd.to_numeric(df['uk_id'], errors='coerce')
+    valid = id_col.notna() & uk_col.notna()
+    return dict(zip(id_col[valid].astype('int64'), uk_col[valid].astype('int64')))
+
+
+def load_uk_id_to_concept_id(csv_path= DATASET_DIR + '/concepts.csv'):
+    """Load mapping from uk_id to concept ID.
+
+    Returns:
+        uk_id_to_concept_id: dict mapping uk_id → concept_id
+    """
+    df = pd.read_csv(csv_path)
+    id_col = pd.to_numeric(df['id'], errors='coerce')
+    uk_col = pd.to_numeric(df['uk_id'], errors='coerce')
+    valid = id_col.notna() & uk_col.notna()
+    return dict(zip(uk_col[valid].astype('int64'), id_col[valid].astype('int64')))
 
 
 def convert_candidates_to_indices(candidates, concept_id_to_index):
@@ -63,6 +82,28 @@ def convert_candidates_to_indices(candidates, concept_id_to_index):
         if cid in concept_id_to_index:
             indices.append(concept_id_to_index[cid])
     return np.array(indices, dtype=np.int64) if indices else np.array([0], dtype=np.int64)
+
+
+def map_labels_to_indices(labels, concept_id_to_index):
+    """Map label concept IDs to embedding matrix indices.
+    
+    Args:
+        labels: (N,) numpy array of concept IDs (or -100 for invalid)
+        concept_id_to_index: dict mapping concept_id → embedding_index
+    
+    Returns:
+        (N,) numpy array of embedding indices (unmapped concepts set to -100)
+    """
+    mapped = np.full_like(labels, -100, dtype=np.int64)
+    for i, concept_id in enumerate(labels):
+        if concept_id == -100:
+            mapped[i] = -100
+        elif int(concept_id) in concept_id_to_index:
+            mapped[i] = concept_id_to_index[int(concept_id)]
+        else:
+            # Concept ID not in mapping - set to -100 so it's ignored by loss
+            mapped[i] = -100
+    return mapped
 
 
 def evaluate_with_candidates(logits, candidates, labels, ids, concept_id_to_index, 
@@ -86,15 +127,20 @@ def evaluate_with_candidates(logits, candidates, labels, ids, concept_id_to_inde
     
     for i in range(len(candidates)):
         cand_ids = candidates[i]  # numpy array of concept IDs
-        label_seq = labels[i].cpu().numpy() if isinstance(labels[i], torch.Tensor) else labels[i]
-        
-        # Find positions with valid labels
-        valid_pos = np.where(label_seq != -100)[0]
-        if len(valid_pos) == 0:
+        label_value = labels[i]
+        if isinstance(label_value, torch.Tensor):
+            if label_value.dim() == 0:
+                if int(label_value.item()) == -100:
+                    continue
+            else:
+                label_seq = label_value.cpu().numpy()
+                valid_pos = np.where(label_seq != -100)[0]
+                if len(valid_pos) == 0:
+                    continue
+        elif int(label_value) == -100:
             continue
-        
-        pos = valid_pos[0]
-        logit = logits[i, pos] if logits.dim() == 3 else logits[i]
+
+        logit = logits[i]
         
         # Convert candidate concept IDs to indices
         cand_indices = convert_candidates_to_indices(cand_ids, concept_id_to_index)
