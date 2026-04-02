@@ -1,0 +1,139 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+import torch
+from torch.utils.data import DataLoader, TensorDataset, random_split
+from tqdm.auto import tqdm
+
+from mapping.model.mapping_model import LinearMapper, cosine_loss
+
+
+@dataclass
+class TrainResult:
+    model: LinearMapper
+    train_loss: list[float]
+    val_loss: list[float]
+    test_cosine: float
+    test_mse: float
+
+
+def train_mapper(
+    X: np.ndarray,
+    Y: np.ndarray,
+    batch_size: int,
+    hidden: int,
+    epochs: int,
+    lr: float,
+    weight_decay: float,
+    val_ratio: float,
+    test_ratio: float,
+    seed: int,
+    device: torch.device,
+) -> TrainResult:
+    in_dim = X.shape[1]
+    out_dim = Y.shape[1]
+
+    X_t = torch.from_numpy(X).float()
+    Y_t = torch.from_numpy(Y).float()
+    dataset = TensorDataset(X_t, Y_t)
+
+    total = len(dataset)
+    test_size = int(total * test_ratio)
+    val_size = int(total * val_ratio)
+    train_size = total - val_size - test_size
+    if train_size <= 0:
+        raise ValueError("Split sizes leave no training examples")
+
+    generator = torch.Generator().manual_seed(seed)
+    train_set, val_set, test_set = random_split(
+        dataset,
+        [train_size, val_size, test_size],
+        generator=generator,
+    )
+
+    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False)
+
+    model = LinearMapper(in_dim=in_dim, out_dim=out_dim, hidden=hidden).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+
+    train_loss_hist: list[float] = []
+    val_loss_hist: list[float] = []
+
+    for _ in tqdm(range(epochs), desc="Training mapper"):
+        model.train()
+        running = 0.0
+        for xb, yb in train_loader:
+            xb = xb.to(device)
+            yb = yb.to(device)
+            optimizer.zero_grad()
+            out = model(xb)
+            loss = cosine_loss(out, yb)
+            loss.backward()
+            optimizer.step()
+            running += loss.item() * xb.size(0)
+        train_epoch = running / len(train_set)
+        train_loss_hist.append(train_epoch)
+
+        if len(val_set) > 0:
+            model.eval()
+            v_running = 0.0
+            with torch.no_grad():
+                for xb, yb in val_loader:
+                    xb = xb.to(device)
+                    yb = yb.to(device)
+                    out = model(xb)
+                    loss = cosine_loss(out, yb)
+                    v_running += loss.item() * xb.size(0)
+            val_epoch = v_running / len(val_set)
+        else:
+            val_epoch = float("nan")
+        val_loss_hist.append(val_epoch)
+
+    model.eval()
+    if len(test_set) > 0:
+        with torch.no_grad():
+            test_x = torch.cat([xb for xb, _ in test_loader]).to(device)
+            test_y = torch.cat([yb for _, yb in test_loader]).to(device)
+            pred = model(test_x).cpu().numpy()
+            test_np = test_y.cpu().numpy()
+            pred_norm = pred / np.maximum(np.linalg.norm(pred, axis=1, keepdims=True), 1e-12)
+            test_norm = test_np / np.maximum(np.linalg.norm(test_np, axis=1, keepdims=True), 1e-12)
+            test_cos = float((pred_norm * test_norm).sum(axis=1).mean())
+            test_mse = float(((pred - test_np) ** 2).mean())
+    else:
+        test_cos = float("nan")
+        test_mse = float("nan")
+
+    return TrainResult(
+        model=model,
+        train_loss=train_loss_hist,
+        val_loss=val_loss_hist,
+        test_cosine=test_cos,
+        test_mse=test_mse,
+    )
+
+
+def save_checkpoint(
+    out_path: Path,
+    model: LinearMapper,
+    train_loss: list[float],
+    val_loss: list[float],
+    in_dim: int,
+    out_dim: int,
+) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "in_dim": in_dim,
+            "out_dim": out_dim,
+            "train_loss": train_loss,
+            "val_loss": val_loss,
+        },
+        out_path,
+    )
