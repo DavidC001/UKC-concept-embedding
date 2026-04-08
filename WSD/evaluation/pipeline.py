@@ -35,7 +35,7 @@ from WSD.training.engine import (
 )
 from WSD.config import WSDConfig, cfg_replace
 
-def run_evaluate(cfg: WSDConfig):
+def run_evaluate(cfg: WSDConfig, run_name: str = None) -> dict:
 
     # Load all necessary data for evaluation
     concept_id_to_index, index_to_concept_id = create_bidirectional_mappings(cfg.ENTITY_TO_ID)
@@ -136,7 +136,7 @@ def run_evaluate(cfg: WSDConfig):
         model.encoder_backbone = model.encoder_backbone.to(cfg.DEVICE)
 
     # Load the trained model weights
-    best_model_path = cfg.OUTPUT_DIR / "BEST" / cfg.RUN_NAME / "best_model.pt"
+    best_model_path = cfg.OUTPUT_DIR / run_name / "best_model.pt"
     if not best_model_path.exists():
         raise ValueError(f"Best model not found at {best_model_path}")
     state_dict = torch.load(best_model_path, map_location=cfg.DEVICE)
@@ -152,7 +152,7 @@ def run_evaluate(cfg: WSDConfig):
             dataloader=dataloader,
             index_to_concept_id=index_to_concept_id,
             uk_id_to_concept_id=uk_id_to_concept_id,
-            output_dir=cfg.OUTPUT_DIR / "BEST" / cfg.RUN_NAME,
+            output_dir=cfg.OUTPUT_DIR / run_name / "EVAL",
             split_name=split_name,
         )
 
@@ -160,7 +160,7 @@ def run_evaluate(cfg: WSDConfig):
     
     
 def evaluate(cfg: WSDConfig):
-    best_folder = cfg.OUTPUT_DIR / "BEST"
+    best_folder = cfg.OUTPUT_DIR
     # list all subdirs
     subdirs = [d for d in best_folder.iterdir() if d.is_dir()]
     if not subdirs:
@@ -173,7 +173,7 @@ def evaluate(cfg: WSDConfig):
         run_cfg = cfg_replace(WSDConfig(), **cfg_dict)
         
         print(f"Evaluating run: {subdir.name}")
-        scores = run_evaluate(run_cfg)
+        scores = run_evaluate(run_cfg, run_name=subdir.name)
         
         # Save scores to a JSON file in the run directory
         scores_file = subdir / "evaluation_scores.json"
