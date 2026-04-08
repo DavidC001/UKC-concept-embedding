@@ -43,48 +43,6 @@ from WSD.training.engine import (
 )
 from WSD.config import WSDConfig, cfg_asdict
 
-
-def _update_best_directory(best_model_path, cfg, run_dir, run_name, monitor_name, monitor_value, epoch, output_dir):
-    """
-    Update the BEST directory with the current best model for this run.
-    
-    Creates a BEST/{run_name}/ subdirectory and maintains:
-    - best_model.pt: the actual model weights
-    - best_metadata.json: metadata about the best model for this run
-    - config.json: a copy of the config used for this run (for reproducibility)
-    
-    This ensures multiple runs don't overwrite each other.
-    """
-    best_run_dir = os.path.join(output_dir, "BEST", run_name)
-    os.makedirs(best_run_dir, exist_ok=True)
-    
-    best_model_dest = os.path.join(best_run_dir, "best_model.pt")
-    metadata_file = os.path.join(best_run_dir, "best_metadata.json")
-    
-    # Copy the best model to BEST/{run_name} directory
-    shutil.copy2(best_model_path, best_model_dest)
-    
-    # Save metadata
-    metadata = {
-        "run_name": run_name,
-        "run_dir": run_dir,
-        "epoch": epoch,
-        "monitor_metric": monitor_name,
-        "monitor_value": float(monitor_value),
-        "timestamp": datetime.now().isoformat(),
-    }
-    with open(metadata_file, "w", encoding="utf-8") as f:
-        json.dump(metadata, f, indent=2)
-    
-    # save cfg for reproducibility
-    cfg_dict = cfg_asdict(cfg)
-    cfg_file = os.path.join(best_run_dir, "config.json")
-    with open(cfg_file, "w", encoding="utf-8") as f:
-        json.dump(cfg_dict, f, indent=2)
-    
-    print(f"Updated BEST/{run_name}/ directory with best model from epoch {epoch}")
-
-
 def _evaluate(
     model,
     loader,
@@ -135,6 +93,12 @@ def train(cfg : WSDConfig):
         f.write(f"Baseline: {getattr(cfg, 'BASELINE', False)}\n")
         f.write(f"Baseline type: {getattr(cfg, 'BASELINE_TYPE', 'linear')}\n")
         f.write("\n")
+
+    # save config for reproducibility
+    config_save_path = os.path.join(run_dir, "config.json")
+    with open(config_save_path, "w", encoding="utf-8") as f:
+        json.dump(cfg_asdict(cfg), f, indent=4)
+    print(f"Saved config: {config_save_path}")
 
     wandb_run = None
     if getattr(cfg, "USE_WANDB", False):
@@ -364,18 +328,12 @@ def train(cfg : WSDConfig):
             best_state_dict = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             best_model_path = os.path.join(run_dir, "best_model.pt")
             torch.save(best_state_dict, best_model_path)
+            
+            # save current evaluation report table in a separate file for the best epoch
+            best_report_file = os.path.join(run_dir, "best_evaluation_report.txt")
+            shutil.copy(report_file, best_report_file)
+            
             print(f"New best checkpoint at epoch {epoch} ({monitor_name}={monitor_value:.4f})")
-            # Update the global BEST directory
-            _update_best_directory(
-                best_model_path=best_model_path,
-                run_dir=run_dir,
-                run_name=run_name,
-                monitor_name=monitor_name,
-                monitor_value=monitor_value,
-                epoch=epoch,
-                output_dir=cfg.OUTPUT_DIR,
-                cfg=cfg,
-            )
         else:
             epochs_without_improvement += 1
             print(
