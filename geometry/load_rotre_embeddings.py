@@ -26,6 +26,10 @@ def load_embeddings(checkpoint_path: str, map_location='cpu') -> torch.Tensor:
 
 
 def whiten_embeddings(emb: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Center embeddings, compute covariance and multiply by a matrix to get identity matrix as covariance. 
+    Returns the whitened embeddings, the mean and the whitening matrix (for later unwhitening if needed).
+    """
     if not isinstance(emb, torch.Tensor):
         emb = torch.tensor(emb)
 

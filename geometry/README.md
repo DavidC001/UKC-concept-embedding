@@ -1,226 +1,43 @@
-# Geometry Analysis for RoTE (UKC) in the Style of arXiv:2406.01506v3
+## Geometry visualizations
 
-This folder implements a paper-inspired geometry analysis pipeline that adapts
-the methodology of:
+This folder contains intrinsic evaluations and diagnostic plots for the concept embeddings learned by RotE. The plots are created by [run.py](run.py) and saved under the output directory configured in the script.
 
-The Geometry of Categorical and Hierarchical Concepts in Large Language Models
-(arXiv:2406.01506v3)
+### 1. `heatmap_hierarchy_lda.png`
 
-to the RoTE/UKC concept embedding space used in this repository.
+This figure compares three matrices over the same set of hierarchy nodes: the shortest-path proximity in the hierarchy, the cosine similarity of the learned category directions on the original embeddings, and the cosine similarity of the same directions on shuffled embeddings.
 
-Main entrypoint: geometry/run.py
+The hierarchy matrix is computed from graph distance on the concept graph and converted into a proximity score. The cosine matrices are built by estimating one direction per node and then taking pairwise dot products between the normalized directions. The original embeddings should show stronger block structure than the shuffled baseline if the hierarchy is encoded geometrically.
 
-## 1) What this reproduces from the paper
+### 2. `hier_orthogonality_b.png`
 
-The implementation follows the same high-level logic as Sections 5.1-5.2 and
-Appendix A/F of the paper:
+This plot measures the angle between a child-to-parent difference vector and the parent direction for every valid hierarchy edge. For each edge, the code computes `cos(l_w - l_parent, l_parent)` for the original embeddings, for a random-parent baseline, and for shuffled embeddings.
 
-1. Build a canonical space by centering and whitening embeddings.
-2. Estimate one vector per hierarchy concept (LDA estimator, plus mean vector).
-3. Compare original vs shuffled controls.
-4. Evaluate hierarchy geometry with:
-   - cosine similarity matrices between estimated concept vectors,
-   - orthogonality diagnostics for parent/child and parent/child/grandparent,
-   - train/test/random projection diagnostics (Figure-3 style),
-   - 2D and 3D visualizations for animal/plant subhierarchies.
+Values near zero indicate that the child-parent displacement is close to orthogonal to the parent direction. The random-parent and shuffled curves are controls: they should not preserve the same regularity as the original curve if the hierarchy is genuinely reflected in the embedding space.
 
-Core formulas mirrored from the paper:
+### 3. `hier_orthogonality_e.png`
 
-- Figure-3 projection diagnostic:
-  (g(y)^T l_w) / ||l_w||^2
-- Theorem-8 style orthogonality checks:
-  cos(l_w - l_parent, l_parent)
-  cos(l_w - l_parent, l_parent - l_grandparent)
+This plot measures a second-order consistency relation along two consecutive hierarchy edges. For each child-parent-grandparent chain, the code computes `cos(l_w - l_parent, l_parent - l_grandparent)` and compares it against random-parent and shuffled baselines.
 
-## 2) Important adaptations and differences
+This checks whether the direction from grandparent to parent is aligned with the direction from parent to child. Again, the random and shuffled curves are the controls.
 
-This code is not a byte-for-byte reproduction of the original Gemma/LLaMA
-WordNet experiments. It is a structurally faithful adaptation to this project.
+### 4. `feature_projection.png`
 
-### Data/model domain
+This figure reproduces the feature-projection experiment for binary hierarchy features. For each feature node, the members are split into train and test subsets, an LDA direction is fitted on the train subset, and the embeddings are projected onto that direction.
 
-- Paper: token unembeddings from Gemma/LLaMA and WordNet synset word sets.
-- Here: RoTE entity embeddings and UKC concept hierarchy from CSV files.
+The plot shows the mean and standard deviation of the projections for train, test, and random samples, for both the original and shuffled embeddings. The y-axis is the normalized projection `g(y)^T \bar{\ell}_w / ||\bar{\ell}_w||^2`. If a feature is well represented, the test projections should stay close to the train projections, while the random baseline should be near zero.
 
-### Feature construction
+### 5. `three_2d_plots_rotre_hierarchy.png`
 
-- Paper: vocabulary sets Y(w) from WordNet words/inflections.
-- Here: descendants in the concept graph define each concept member set.
+This figure contains three 2D geometric views of selected animal/plant subtrees. It projects the whitened embeddings into low-dimensional subspaces spanned by learned LDA directions and shows both the concept directions and the descendant embeddings.
 
-### Minimum concept size
+The panels visualize: `animal vs mammal`, `animal vs mammal -> bird`, and `plant -> animal vs mammal -> bird`. The purpose is to make the local hierarchy geometry interpretable, not to compute a new metric.
 
-- Paper noun setup mentions minimum 50 words/synset.
-- Here default is min_category_size=25.
+### 6. `two_3d_plots_rotre_hierarchy.png`
 
-### Train/test split ratio
+This figure shows two 3D views of the same hierarchy region. The first panel uses the directions for `mammal`, `bird`, and `fish` with `animal` as the higher-level direction; the second panel adds `reptile` and visualizes the simplex-like relation among the four directions.
 
-- Paper Figure-3 split: 70/30.
-- Here default feature_train_ratio=0.8 (80/20), configurable.
+The 3D views are a geometric illustration of how the learned concept directions are arranged relative to one another and how the corresponding embedding clouds sit around those directions.
 
-### Shortest-path heatmap normalization
+### Output summary
 
-- Paper text describes proximity as (1 + distance)^(-1).
-- Current code uses 1/distance - 1 (with diagonal set to 1), which changes scale
-  and sign interpretation for non-neighbors.
-
-### Parent selection in DAG
-
-- As in the paper appendix note, when a node has multiple parents, one parent is
-  selected for edge-wise metrics.
-- Current code uses the first predecessor returned by networkx iteration.
-
-## 3) Code structure
-
-- run.py
-  - Pipeline orchestration, argument parsing, and output saving.
-- load_rotre_embeddings.py
-  - Loads checkpoint embeddings and applies centering + whitening.
-- hierarchy.py
-  - Reads concept tables, builds directed hierarchy, and derives descendant sets.
-- category.py
-  - LDA-style vector estimator using Ledoit-Wolf covariance shrinkage.
-- metrics.py
-  - Direction estimation, cosine/proximity matrices, orthogonality metrics,
-    Figure-3 style projection statistics, JSON/TXT summaries.
-- visualizations.py
-  - Heatmaps, orthogonality curves, Figure-3 style plot, 2D/3D geometry plots,
-    and subtree graphs.
-- plotting.py
-  - Low-level projection plotting utilities used by visualizations.py.
-- common.py
-  - Utility helpers (safe normalization, optional progress bars).
-
-## 4) Input files and assumptions
-
-Expected defaults:
-
-- checkpoint: dataset/RotE/model.pt
-- entity_to_id: dataset/RotE/entity_to_id.pickle
-- concepts table: dataset/concepts.csv
-- hierarchy edges: dataset/concept_relations.csv
-- hierarchy relation_type: 20
-
-Assumptions:
-
-- relation_type=20 corresponds to parent -> child (has_hyponym style edge).
-- Concept IDs present in hierarchy are mapped in entity_to_id for projection.
-- animal and plant roots default to concept IDs 37 and 38.
-
-## 5) Output files and how to interpret them
-
-All outputs go to --output_dir (default geometry/figures).
-
-### heatmap_hierarchy_lda.png
-
-- Left: hierarchy proximity matrix.
-- Middle: cosine similarity between LDA vectors in original space.
-- Right: cosine similarity after shuffled control.
-
-Paper connection:
-- Corresponds to the Figure-4 style analysis of hierarchy distance vs
-  representation geometry.
-
-### hier_orthogonality_b.png
-
-- Curves for cos(l_w - l_parent, l_parent):
-  - Original
-  - Original + random parent baseline
-  - Shuffled baseline
-
-Paper connection:
-- Corresponds to Figure-5 style statement-(a) Theorem-8 check.
-
-### hier_orthogonality_e.png
-
-- Curves for cos(l_w - l_parent, l_parent - l_grandparent):
-  - Original
-  - Original + random parent/grandparent baseline
-  - Shuffled baseline
-
-Paper connection:
-- Corresponds to Appendix-F Figure-10 style statement-(d) Theorem-8 check.
-
-### feature_projection_figure3_style.png
-
-- Two panels: Original Unembeddings vs Shuffled Unembeddings.
-- For each feature, plots train/test/random projection mean with error bars.
-
-Paper connection:
-- Directly mirrors Figure 3 diagnostic logic.
-
-Expected pattern:
-- Original: train/test near 1, random near 0.
-- Shuffled: no strong separation.
-
-### three_2d_plots_rotre_hierarchy.png
-
-- 2D projections for:
-  - animal vs mammal
-  - animal vs (bird - mammal)
-  - (animal - plant) vs (bird - mammal)
-
-Paper connection:
-- Mirrors Figure 2 style geometric demonstrations of hierarchical orthogonality.
-
-### two_3d_plots_rotre_hierarchy.png
-
-- Left panel:
-  - span{mammal, bird, fish} with animal vector shown relative to polytope plane.
-- Right panel:
-  - simplex/tetrahedron style view for mammal, bird, fish, reptile contrasts.
-
-Paper connection:
-- Mirrors Figure 6 and Appendix-A style categorical polytope geometry.
-
-### animal_plant_subtrees.png
-
-- Side-by-side graph views of local hierarchy under animal and plant roots.
-
-### metrics_summary.json
-
-- Compact machine-readable summary:
-  - node counts,
-  - selected concept IDs,
-  - aggregate means of orthogonality and projection diagnostics.
-
-### results_log.txt
-
-- Human-readable run summary with the same key statistics.
-
-## 6) CLI usage
-
-Basic run:
-
-python geometry/run.py \
-  --checkpoint dataset/RotE/model.pt \
-  --entity_to_id dataset/RotE/entity_to_id.pickle \
-  --output_dir geometry/figures
-
-Disable progress bars:
-
-python geometry/run.py --no_progress
-
-Useful knobs:
-
-- --min_category_size 25
-- --feature_train_ratio 0.8
-- --feature_random_sample_size 20000
-- --animal_root_id 37
-- --plant_root_id 38
-- --subtree_depth 3
-- --seed 100
-
-## 7) Practical reading guide
-
-If you want a quick sanity pass that the geometry matches paper expectations:
-
-1. Check feature_projection_figure3_style.png first.
-2. Then inspect hier_orthogonality_b.png and hier_orthogonality_e.png.
-3. Use heatmap_hierarchy_lda.png for global structure.
-4. Use 2D/3D plots for interpretable local examples.
-
-## 8) Summary
-
-This geometry module is best viewed as a RoTE/UKC adaptation of the paper's
-experimental geometry protocol. The conceptual structure and diagnostics are
-aligned with the paper, while dataset/model-specific details differ by design.
+The script also saves a JSON summary with the averaged metric values used in the figures. That file is intended for quick comparison across runs without reopening the plots.

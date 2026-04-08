@@ -2,7 +2,8 @@
 Build precomputed embeddings for WSD datasets.
 
 This script encodes WSD dataset sentences using a pretrained model and saves
-the embeddings in NPZ format compatible with PrecomputedEmbeddingDataset.
+the embeddings and scalar class labels in NPZ format compatible with
+PrecomputedEmbeddingDataset.
 """
 
 import argparse
@@ -16,6 +17,45 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
+def validate_precomputed_alignment(npz_data, split_map):
+    """Fail fast when NPZ embeddings/labels are not aligned with current TSV splits."""
+    split_to_keys = {
+        "train": ("train_embeddings", "train_labels"),
+        "eval": ("eval_embeddings", "eval_labels"),
+        "test": ("test_embeddings", "test_labels"),
+    }
+
+    errors = []
+    for split, (emb_key, lbl_key) in split_to_keys.items():
+        emb_n = int(len(npz_data[emb_key]))
+        lbl_n = int(len(npz_data[lbl_key]))
+        split_n = int(len(split_map[split].ids))
+
+        if emb_n != lbl_n:
+            errors.append(f"[{split}] NPZ mismatch: {emb_key}={emb_n}, {lbl_key}={lbl_n}")
+        if emb_n != split_n or lbl_n != split_n:
+            errors.append(
+                f"[{split}] NPZ/TSV mismatch: embeddings={emb_n}, labels={lbl_n}, split_rows={split_n}"
+            )
+
+        if npz_data[lbl_key].ndim != 1:
+            errors.append(f"[{split}] expected 1D scalar labels in NPZ, got shape={npz_data[lbl_key].shape}")
+
+        if split_map[split].labels.ndim != 1:
+            errors.append(f"[{split}] expected 1D scalar labels in split map, got shape={split_map[split].labels.shape}")
+
+        if npz_data[lbl_key].shape != split_map[split].labels.shape:
+            errors.append(
+                f"[{split}] label shape mismatch: npz={npz_data[lbl_key].shape}, split={split_map[split].labels.shape}"
+            )
+
+    if errors:
+        detail = "\n  - " + "\n  - ".join(errors)
+        raise ValueError(
+            "Precomputed data alignment check failed. "
+            "Regenerate NPZ embeddings from the same current train/eval/test TSV files."
+            f"\nDetails:{detail}"
+        )
 
 class SentenceDataset(Dataset):
     """Dataset wrapper for sentences with location information."""
@@ -39,20 +79,31 @@ def collate_fn(batch):
 
 
 def load_tsv_file(tsv_path):
-    """Load a single TSV file and extract sentences, labels, and locations."""
+    """Load a single TSV file and extract sentences, scalar labels, and locations."""
     df = pd.read_csv(tsv_path, sep="\t")
 
     sentences = df["sentence_text"].tolist()
-    
-    # Parse labels
-    labels = []
-    for label_val in df["label"].tolist():
-        if isinstance(label_val, str):
-            labels.append(ast.literal_eval(label_val))
-        elif isinstance(label_val, list):
-            labels.append(label_val)
-        else:
-            labels.append([])
+
+    # Prefer direct scalar targets if available.
+    if "answer_id" in df.columns:
+        labels = pd.to_numeric(df["answer_id"], errors="coerce").fillna(-100).astype(np.int64).tolist()
+    else:
+        labels = []
+        for label_val in df["label"].tolist():
+            if isinstance(label_val, str):
+                seq = ast.literal_eval(label_val)
+            elif isinstance(label_val, list):
+                seq = label_val
+            else:
+                seq = []
+
+            scalar = -100
+            for value in seq:
+                iv = int(value)
+                if iv != -100:
+                    scalar = iv
+                    break
+            labels.append(scalar)
     
     # Load locations
     locations = df["loc"].astype(int).tolist()
@@ -77,25 +128,23 @@ def encode_dataset(
     device,
     batch_size=32,
     max_length=128,
-    show_progress=True,
 ):
     """
     Encode sentences using a pretrained model.
 
     Args:
         sentences: List of sentence strings
-        labels: List of label sequences for each sentence
+        labels: List of scalar class labels for each sentence
         locations: List of target word locations in each sentence
         tokenizer: Tokenizer to use
         model: Model to use for encoding
         device: Device to use (cuda or cpu)
         batch_size: Batch size for encoding
         max_length: Maximum sequence length
-        show_progress: Whether to show progress bar
 
     Returns:
         embeddings: (N, D) array of sentence embeddings
-        token_labels: (N, T) array of token labels (padded to max_length)
+        scalar_labels: (N,) array of class labels
     """
     dataset = SentenceDataset(sentences, labels, locations)
     dataloader = DataLoader(
@@ -107,12 +156,12 @@ def encode_dataset(
     )
 
     all_embeddings = []
-    all_token_labels = []
+    all_scalar_labels = []
 
-    iterator = tqdm(dataloader, desc="Encoding", disable=not show_progress)
+    iterator = tqdm(dataloader, desc="Encoding")
 
     for batch in iterator:
-        batch_sentences, batch_word_labels, batch_locs = batch
+        batch_sentences, batch_scalar_labels, batch_locs = batch
         batch_words = [s.split() for s in batch_sentences]
         batch_size_actual = len(batch_words)
 
@@ -128,38 +177,7 @@ def encode_dataset(
 
         inputs = {k: v.to(device) for k, v in encodings.items()}
 
-        # Align labels: map word labels to tokens
-        batch_labels = []
-        for i in range(batch_size_actual):
-            word_ids = encodings.encodings[i].word_ids
-            token_labels = [-100] * len(word_ids)
-
-            for j, word_id in enumerate(word_ids):
-                if word_id is None:
-                    continue
-                if word_id >= len(batch_word_labels[i]):
-                    continue
-
-                # Detect last token of a word
-                is_last_token = (
-                    j == len(word_ids) - 1 or word_ids[j + 1] != word_id
-                )
-
-                if is_last_token:
-                    token_labels[j] = batch_word_labels[i][word_id]
-
-            batch_labels.append(token_labels)
-
-        # Pad labels
-        padded_labels = []
-        for lbl in batch_labels:
-            if len(lbl) < max_length:
-                lbl = lbl + [-100] * (max_length - len(lbl))
-            else:
-                lbl = lbl[:max_length]
-            padded_labels.append(lbl)
-
-        batch_labels = np.array(padded_labels, dtype=np.int64)
+        batch_labels = np.asarray(batch_scalar_labels, dtype=np.int64)
 
         # Forward pass
         with torch.no_grad():
@@ -192,18 +210,18 @@ def encode_dataset(
             batch_embeddings.append(emb.cpu().numpy())
 
         all_embeddings.extend(batch_embeddings)
-        all_token_labels.append(batch_labels)
+        all_scalar_labels.append(batch_labels)
 
     final_embeddings = np.vstack(all_embeddings) if all_embeddings else np.array([])
-    final_token_labels = np.vstack(all_token_labels) if all_token_labels else np.array([])
+    final_scalar_labels = np.concatenate(all_scalar_labels, axis=0) if all_scalar_labels else np.array([])
 
-    if len(final_embeddings) != len(final_token_labels):
+    if len(final_embeddings) != len(final_scalar_labels):
         raise ValueError(
             "Embedding/label size mismatch after encoding: "
-            f"embeddings={len(final_embeddings)}, labels={len(final_token_labels)}"
+            f"embeddings={len(final_embeddings)}, labels={len(final_scalar_labels)}"
         )
 
-    return final_embeddings, final_token_labels
+    return final_embeddings, final_scalar_labels
 
 
 def main():
@@ -303,7 +321,7 @@ def main():
     # Encode datasets
     print("\n✓ Encoding datasets...")
 
-    train_embeddings, train_token_labels = encode_dataset(
+    train_embeddings, train_scalar_labels = encode_dataset(
         train_sentences,
         train_labels,
         train_locations,
@@ -311,11 +329,10 @@ def main():
         model,
         device,
         batch_size=args.batch_size,
-        max_length=args.max_length,
-        show_progress=True,
+        max_length=args.max_length
     )
 
-    eval_embeddings, eval_token_labels = encode_dataset(
+    eval_embeddings, eval_scalar_labels = encode_dataset(
         eval_sentences,
         eval_labels,
         eval_locations,
@@ -323,11 +340,10 @@ def main():
         model,
         device,
         batch_size=args.batch_size,
-        max_length=args.max_length,
-        show_progress=True,
+        max_length=args.max_length
     )
 
-    test_embeddings, test_token_labels = encode_dataset(
+    test_embeddings, test_scalar_labels = encode_dataset(
         test_sentences,
         test_labels,
         test_locations,
@@ -335,21 +351,20 @@ def main():
         model,
         device,
         batch_size=args.batch_size,
-        max_length=args.max_length,
-        show_progress=True,
+        max_length=args.max_length
     )
 
-    if len(train_embeddings) != len(train_token_labels):
+    if len(train_embeddings) != len(train_scalar_labels):
         raise ValueError(
-            f"Train mismatch before save: embeddings={len(train_embeddings)}, labels={len(train_token_labels)}"
+            f"Train mismatch before save: embeddings={len(train_embeddings)}, labels={len(train_scalar_labels)}"
         )
-    if len(eval_embeddings) != len(eval_token_labels):
+    if len(eval_embeddings) != len(eval_scalar_labels):
         raise ValueError(
-            f"Eval mismatch before save: embeddings={len(eval_embeddings)}, labels={len(eval_token_labels)}"
+            f"Eval mismatch before save: embeddings={len(eval_embeddings)}, labels={len(eval_scalar_labels)}"
         )
-    if len(test_embeddings) != len(test_token_labels):
+    if len(test_embeddings) != len(test_scalar_labels):
         raise ValueError(
-            f"Test mismatch before save: embeddings={len(test_embeddings)}, labels={len(test_token_labels)}"
+            f"Test mismatch before save: embeddings={len(test_embeddings)}, labels={len(test_scalar_labels)}"
         )
 
     # Normalize embeddings
@@ -364,11 +379,11 @@ def main():
     np.savez_compressed(
         args.output,
         train_embeddings=train_embeddings,
-        train_labels=train_token_labels,
+        train_labels=train_scalar_labels,
         eval_embeddings=eval_embeddings,
-        eval_labels=eval_token_labels,
+        eval_labels=eval_scalar_labels,
         test_embeddings=test_embeddings,
-        test_labels=test_token_labels,
+        test_labels=test_scalar_labels,
     )
 
     print(f"✓ Done!")

@@ -21,17 +21,11 @@ class EncoderBackbone(nn.Module):
         lora_r=8,
         lora_alpha=16,
         lora_dropout=0.1,
-        token_pooling="cls",
     ):
         super().__init__()
         self.model = AutoModel.from_pretrained(model_name)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.hidden_size = int(self.model.config.hidden_size)
-        self.token_pooling = str(token_pooling)
-
-        valid_pooling = {"cls", "target_last_subword"}
-        if self.token_pooling not in valid_pooling:
-            raise ValueError(f"token_pooling must be one of: {sorted(valid_pooling)}")
 
         if train_mode == "frozen":
             for p in self.model.parameters():
@@ -55,9 +49,6 @@ class EncoderBackbone(nn.Module):
     def forward(self, input_ids, attention_mask, target_token_idx=None):
         out = self.model(input_ids=input_ids, attention_mask=attention_mask)
         hidden = out.last_hidden_state
-
-        if self.token_pooling == "cls":
-            return hidden[:, 0, :]
 
         if target_token_idx is None:
             raise RuntimeError("target_last_subword pooling requires target_token_idx in batch")

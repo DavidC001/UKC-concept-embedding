@@ -1,11 +1,5 @@
 """Build and load hierarchy cache for YOLO9000-style probabilities."""
-
-import argparse
-import os
-
 import torch
-
-import WSD.config as config
 from WSD.concepts import build_parent_index_from_is_a, create_bidirectional_mappings
 
 
@@ -99,17 +93,15 @@ def build_hierarchy_group_tensors(parent_index):
     }
 
 
-def build_and_save_hierarchy(output_path=None):
-    if output_path is None:
-        output_path = config.HIERARCHY_CACHE_PATH
+def build_hierarchy(entity_to_id_csv, concept_rel_csv):
 
-    concept_id_to_index, _ = create_bidirectional_mappings(config.ENTITY_TO_ID)
+    concept_id_to_index, _ = create_bidirectional_mappings(entity_to_id_csv)
     num_concepts = len(concept_id_to_index)
 
     parent_index, num_roots, num_multi_parent = build_parent_index_from_is_a(
         concept_id_to_index=concept_id_to_index,
         num_concepts=num_concepts,
-        csv_path=config.CONCEPT_REL_CSV,
+        csv_path=concept_rel_csv,
     )
     hierarchy_tensors = build_hierarchy_group_tensors(parent_index)
 
@@ -122,42 +114,5 @@ def build_and_save_hierarchy(output_path=None):
         **hierarchy_tensors,
     }
 
-    out_dir = os.path.dirname(output_path)
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
-    torch.save(hierarchy_data, output_path)
-    print(f"Hierarchy saved to {output_path}")
     return hierarchy_data
 
-
-def load_hierarchy(hierarchy_path=None):
-    if hierarchy_path is None:
-        hierarchy_path = config.HIERARCHY_CACHE_PATH
-
-    if not os.path.exists(hierarchy_path):
-        return build_and_save_hierarchy(hierarchy_path)
-
-    hierarchy_data = torch.load(hierarchy_path, weights_only=False)
-    required = {
-        "root_indices",
-        "child_group_offsets",
-        "child_group_children",
-        "child_pos_in_parent",
-        "path_root_pos",
-        "path_edge_counts",
-        "path_parents",
-        "path_children",
-    }
-
-    if not all(k in hierarchy_data for k in required) and "parent_index" in hierarchy_data:
-        hierarchy_data.update(build_hierarchy_group_tensors(hierarchy_data["parent_index"]))
-        torch.save(hierarchy_data, hierarchy_path)
-
-    return hierarchy_data
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Build hierarchy cache")
-    parser.add_argument("--output", type=str, default=None, help="Output hierarchy cache path")
-    args = parser.parse_args()
-    build_and_save_hierarchy(output_path=args.output)

@@ -7,17 +7,15 @@ from pathlib import Path
 import numpy as np
 import seaborn as sns
 import torch
+from tqdm import tqdm
 
-from common import progress_iter
 from hierarchy import (
     build_hierarchy_graph,
     build_node_sets_for_directions,
     descendant_indices,
     find_child_by_label,
-    find_root_by_label,
     graph_roots,
     load_concepts,
-    validate_concept_id,
 )
 from load_rotre_embeddings import (
     build_vocab_list,
@@ -32,10 +30,8 @@ from metrics import (
     estimate_dirs,
     save_json,
     shortest_path_matrix,
-    write_text_log,
 )
 from visualizations import (
-    plot_animal_plant_subtree,
     plot_heatmaps,
     plot_orthogonality_curves,
     plot_projection_feature_figure,
@@ -55,40 +51,42 @@ def main(args: argparse.Namespace) -> None:
     emb = load_embeddings(args.checkpoint, map_location="cpu")
     g_whitened, _, _ = whiten_embeddings(emb)
 
+    # compute permutated version to have a baseline where no correlation structure is preserved, but the distribution of values is the same
     perm = torch.randperm(g_whitened.shape[0], generator=torch.Generator().manual_seed(args.seed))
     g_shuffled = g_whitened[perm]
 
     concepts_df = load_concepts(args.concepts_csv)
     hgraph = build_hierarchy_graph(args.concept_relations_csv, relation_type=args.hierarchy_relation_type)
     roots = graph_roots(hgraph)
+    
+    # print number of roots
+    print(f"Found {len(roots)} roots in the hierarchy graph.")
 
-    if args.animal_root_id is not None:
-        animal_root = validate_concept_id(concepts_df, args.animal_root_id, expected_label=args.animal_label)
-    else:
-        animal_root = find_root_by_label(concepts_df, args.animal_label)
 
-    if args.plant_root_id is not None:
-        plant_root = validate_concept_id(concepts_df, args.plant_root_id, expected_label=args.plant_label)
-    else:
-        plant_root = find_root_by_label(concepts_df, args.plant_label)
+    # take subtrees of the animal and plant roots for focused analysis and visualization
+    animal_root =  args.animal_root_id
+    plant_root = args.plant_root_id
+
 
     node_members = {}
-    roots_iter = progress_iter(
+    roots_iter = tqdm(
         roots,
-        enabled=(not args.no_progress),
         desc="Building hierarchy node sets",
         total=len(roots),
     )
     for r in roots_iter:
         node_members.update(build_node_sets_for_directions(hgraph, r, min_size=args.min_category_size))
 
-    dirs_original = estimate_dirs(g_whitened, ent2idx, node_members, show_progress=(not args.no_progress))
-    dirs_shuffled = estimate_dirs(g_shuffled, ent2idx, node_members, show_progress=(not args.no_progress))
+    dirs_original = estimate_dirs(g_whitened, ent2idx, node_members)
+    dirs_shuffled = estimate_dirs(g_shuffled, ent2idx, node_members)
 
-    sorted_nodes = sorted([n for n in node_members.keys() if n in dirs_original and n in dirs_shuffled])
+    kept_nodes = sorted([n for n in node_members.keys() if n in dirs_original and n in dirs_shuffled])
 
-    cos_lda_original, kept_nodes = cosine_matrix_from_dirs(sorted_nodes, dirs_original, version="lda")
-    cos_lda_shuffled, _ = cosine_matrix_from_dirs(sorted_nodes, dirs_shuffled, version="lda")
+    """
+    Compute the heatmap of cosine similarities between category directions, and compare it to the proximity in the hierarchy (shortest path distance).
+    """
+    cos_lda_original = cosine_matrix_from_dirs(kept_nodes, dirs_original, version="lda")
+    cos_lda_shuffled = cosine_matrix_from_dirs(kept_nodes, dirs_shuffled, version="lda")
     dist_prox = shortest_path_matrix(hgraph, kept_nodes)
 
     plot_heatmaps(
@@ -99,6 +97,10 @@ def main(args: argparse.Namespace) -> None:
         title_prefix="Hierarchy",
     )
 
+
+    """
+    Compute orthogonality metrics for category directions, comparing original vs shuffled embeddings, and parent vs random parent.
+    """
     metrics = compute_orthogonality_metrics(
         hgraph=hgraph,
         sorted_nodes=kept_nodes,
@@ -106,7 +108,6 @@ def main(args: argparse.Namespace) -> None:
         dirs_shuffled=dirs_shuffled,
         version="lda",
         seed=args.seed,
-        show_progress=(not args.no_progress),
     )
 
     plot_orthogonality_curves(
@@ -122,6 +123,10 @@ def main(args: argparse.Namespace) -> None:
         title=r"cos(l_w - l_parent, l_parent - l_grandparent)",
     )
 
+
+    """
+    Compute and plot metrics on binary features
+    """
     proj_stats = compute_projection_feature_stats(
         g_whitened=g_whitened,
         g_shuffled=g_shuffled,
@@ -132,8 +137,13 @@ def main(args: argparse.Namespace) -> None:
         train_ratio=args.feature_train_ratio,
         random_sample_size=args.feature_random_sample_size,
     )
-    plot_projection_feature_figure(out_dir / "feature_projection_figure3_style.png", proj_stats)
+    plot_projection_feature_figure(out_dir / "feature_projection.png", proj_stats)
 
+
+    """
+    Plot 2D and 3D visualizations of the animal and plant subtrees, highlighting the positions of the category directions for the main categories 
+    (animal, plant, mammal, bird, fish, reptile).
+    """
     id_to_label = {str(int(r.id)): str(r.label).lower() for r in concepts_df.itertuples(index=False)}
     vocab_list = build_vocab_list(emb.shape[0], ent2idx, id_to_label=id_to_label)
 
@@ -184,15 +194,10 @@ def main(args: argparse.Namespace) -> None:
         ids,
     )
 
-    plot_animal_plant_subtree(
-        out_dir / "animal_plant_subtrees.png",
-        hgraph,
-        concepts_df,
-        animal_root,
-        plant_root,
-        depth=args.subtree_depth,
-    )
 
+    """
+    Save a summary of the main metrics in a JSON file, for easier experiment tracking and comparison with future runs. Also save a text log with the main results and stats.
+    """
     metrics_summary = {
         "num_total_nodes_with_members": len(node_members),
         "num_nodes_with_dirs_original": len(dirs_original),
@@ -227,29 +232,6 @@ def main(args: argparse.Namespace) -> None:
     }
     save_json(out_dir / "metrics_summary.json", metrics_summary)
 
-    # Full run log for easier experiment tracking.
-    log_lines = [
-        "Geometry run result log",
-        "",
-        f"Output dir: {out_dir}",
-        f"Nodes with members: {len(node_members)}",
-        f"Nodes with directions: {len(dirs_original)}",
-        f"Nodes used for metrics: {len(kept_nodes)}",
-        "",
-        "Orthogonality means (kept lines only):",
-        f"B original: {metrics_summary['orthogonality']['b']['original_parent']}",
-        f"B original+random: {metrics_summary['orthogonality']['b']['original_random_parent']}",
-        f"B shuffled: {metrics_summary['orthogonality']['b']['shuffled_parent']}",
-        f"E original: {metrics_summary['orthogonality']['e']['original_parent']}",
-        f"E original+random: {metrics_summary['orthogonality']['e']['original_random_parent']}",
-        f"E shuffled: {metrics_summary['orthogonality']['e']['shuffled_parent']}",
-        "",
-        "Figure-3-style projection global means:",
-        f"Original train/test/random: {metrics_summary['feature_projection']['original_train_mean_global']}, {metrics_summary['feature_projection']['original_test_mean_global']}, {metrics_summary['feature_projection']['original_random_mean_global']}",
-        f"Shuffled train/test/random: {metrics_summary['feature_projection']['shuffled_train_mean_global']}, {metrics_summary['feature_projection']['shuffled_test_mean_global']}, {metrics_summary['feature_projection']['shuffled_random_mean_global']}",
-    ]
-    write_text_log(out_dir / "results_log.txt", log_lines)
-
     print("Saved outputs to:", out_dir)
 
 
@@ -260,17 +242,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--concepts_csv", type=str, default="dataset/concepts.csv")
     parser.add_argument("--concept_relations_csv", type=str, default="dataset/concept_relations.csv")
     parser.add_argument("--hierarchy_relation_type", type=int, default=20)
+    
     parser.add_argument("--animal_root_id", type=int, default=37)
     parser.add_argument("--plant_root_id", type=int, default=38)
-    parser.add_argument("--animal_label", type=str, default="animal")
-    parser.add_argument("--plant_label", type=str, default="plant")
+    
     parser.add_argument("--min_category_size", type=int, default=25)
     parser.add_argument("--subtree_depth", type=int, default=3)
     parser.add_argument("--seed", type=int, default=100)
     parser.add_argument("--output_dir", type=str, default="geometry/figures")
     parser.add_argument("--feature_train_ratio", type=float, default=0.8)
     parser.add_argument("--feature_random_sample_size", type=int, default=20000)
-    parser.add_argument("--no_progress", action="store_true", help="Disable tqdm progress bars")
     return parser
 
 
