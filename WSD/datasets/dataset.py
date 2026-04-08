@@ -30,13 +30,6 @@ def _parse_labels(label_value):
     return []
 
 
-def _extract_target_label_from_sequence(label_seq):
-    for value in label_seq:
-        iv = int(value)
-        if iv != -100:
-            return iv
-    return -100
-
 
 def _build_scalar_targets(df):
     labels = np.full((len(df),), -100, dtype=np.int64)
@@ -54,9 +47,7 @@ def _build_scalar_targets(df):
     return labels
 
 
-def load_tsv_split(tsv_path, max_label_len=128):
-    del max_label_len
-
+def load_tsv_split(tsv_path):
     df = pd.read_csv(tsv_path, sep="\t")
 
     ids = df["id"].tolist()
@@ -74,11 +65,11 @@ def load_tsv_split(tsv_path, max_label_len=128):
     )
 
 
-def load_all_splits(train_tsv, eval_tsv, test_tsv, max_label_len=128):
+def load_all_splits(train_tsv, eval_tsv, test_tsv):
     return {
-        "train": load_tsv_split(train_tsv, max_label_len=max_label_len),
-        "eval": load_tsv_split(eval_tsv, max_label_len=max_label_len),
-        "test": load_tsv_split(test_tsv, max_label_len=max_label_len),
+        "train": load_tsv_split(train_tsv),
+        "eval": load_tsv_split(eval_tsv),
+        "test": load_tsv_split(test_tsv),
     }
 
 
@@ -161,36 +152,25 @@ def _last_subword_positions(encodings, target_word_locs):
     return torch.tensor(positions, dtype=torch.long), torch.tensor(found, dtype=torch.bool)
 
 
-def collate_encoder(batch, tokenizer, formatter, max_length, token_pooling):
+def collate_encoder(batch, tokenizer, max_length):
     records = [b["record"] for b in batch]
     labels = torch.stack([b["labels"] for b in batch])
 
-    if token_pooling == "target_last_subword":
-        split_words = [str(rec.get("sentence_text", "")).split() for rec in records]
-        tokens = tokenizer(
-            split_words,
-            padding=True,
-            truncation=True,
-            max_length=max_length,
-            return_tensors="pt",
-            is_split_into_words=True,
-        )
-        target_word_locs = [_extract_word_location(rec) for rec in records]
-        target_token_idx, target_found = _last_subword_positions(tokens, target_word_locs)
-
-        labels = labels.clone()
-        labels[~target_found] = -100
-        texts = [" ".join(words) for words in split_words]
-    else:
-        texts = [formatter.format(rec) for rec in records]
-        tokens = tokenizer(
-            texts,
-            padding=True,
-            truncation=True,
-            max_length=max_length,
-            return_tensors="pt",
-        )
-        target_token_idx = None
+    split_words = [str(rec.get("sentence_text", "")).split() for rec in records]
+    tokens = tokenizer(
+        split_words,
+        padding=True,
+        truncation=True,
+        max_length=max_length,
+        return_tensors="pt",
+        is_split_into_words=True,
+    )
+    target_word_locs = [_extract_word_location(rec) for rec in records]
+    target_token_idx, target_found = _last_subword_positions(tokens, target_word_locs)
+    
+    labels = labels.clone()
+    labels[~target_found] = -100
+    texts = [" ".join(words) for words in split_words]
 
     out = {
         "input_ids": tokens["input_ids"],
@@ -207,28 +187,14 @@ def collate_encoder(batch, tokenizer, formatter, max_length, token_pooling):
 
 
 def load_npz_data(npz_file):
-    def to_scalar_targets(arr):
-        arr = np.asarray(arr)
-        if arr.ndim == 1:
-            return arr.astype(np.int64)
-        if arr.ndim == 2:
-            out = np.full((arr.shape[0],), -100, dtype=np.int64)
-            valid = arr != -100
-            has_valid = valid.any(axis=1)
-            first_pos = np.argmax(valid, axis=1)
-            row_idx = np.arange(arr.shape[0])
-            out[has_valid] = arr[row_idx[has_valid], first_pos[has_valid]]
-            return out
-        raise ValueError(f"Unsupported label tensor rank in NPZ: shape={arr.shape}")
-
     data = np.load(npz_file)
     return {
         "train_embeddings": data["train_embeddings"],
-        "train_labels": to_scalar_targets(data["train_labels"]),
+        "train_labels": data["train_labels"].astype(np.int64),
         "eval_embeddings": data["eval_embeddings"],
-        "eval_labels": to_scalar_targets(data["eval_labels"]),
+        "eval_labels": data["eval_labels"].astype(np.int64),
         "test_embeddings": data["test_embeddings"],
-        "test_labels": to_scalar_targets(data["test_labels"]),
+        "test_labels": data["test_labels"].astype(np.int64),
     }
 
 
@@ -318,7 +284,7 @@ def load_npz_data_or_build(
     npz_path.parent.mkdir(parents=True, exist_ok=True)
     
     # Build build command
-    build_script = Path(__file__).parent.parent / "scripts" / "build_precomputed_embeddings.py"
+    build_script = Path(__file__).parent.parent / "utils" / "build_precomputed_embeddings.py"
     if not build_script.exists():
         raise FileNotFoundError(
             f"Build script not found at {build_script}. "
@@ -369,7 +335,7 @@ def build_dataloaders_precomputed(npz_data, split_map, batch_size, eval_batch_si
     }
 
 
-def build_dataloaders_encoder(split_map, tokenizer, formatter, batch_size, eval_batch_size, max_length, token_pooling):
+def build_dataloaders_encoder(split_map, tokenizer, batch_size, eval_batch_size, max_length):
     train_ds = EncoderTextDataset(split_map["train"])
     eval_ds = EncoderTextDataset(split_map["eval"])
     test_ds = EncoderTextDataset(split_map["test"])
@@ -377,9 +343,7 @@ def build_dataloaders_encoder(split_map, tokenizer, formatter, batch_size, eval_
     collate_fn = partial(
         collate_encoder,
         tokenizer=tokenizer,
-        formatter=formatter,
         max_length=max_length,
-        token_pooling=token_pooling,
     )
 
     return {

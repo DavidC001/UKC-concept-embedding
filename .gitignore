@@ -35,3 +35,5 @@ sbatch*
 geometry/figures/
 geometry/rote_2d_visualization/output/
 *.pt
+
+outputs/

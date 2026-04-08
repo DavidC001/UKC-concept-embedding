@@ -40,8 +40,8 @@ class UnifiedConceptClassifier(nn.Module):
         encoder_backbone=None,
         parent_index=None,
         hierarchy_data=None,
-        hierarchy_loss_type="factorized",
         weighted_hierarchy_alpha=0.5,
+        freeze_concept_embeddings=True,
         baseline=False,
         baseline_type="linear",
         similarity_metric="cosine",
@@ -53,7 +53,6 @@ class UnifiedConceptClassifier(nn.Module):
         self.baseline = bool(baseline)
         self.baseline_type = str(baseline_type)
         self.similarity_metric = str(similarity_metric)
-        self.hierarchy_loss_type = str(hierarchy_loss_type)
         self.weighted_hierarchy_alpha = float(weighted_hierarchy_alpha)
 
         if self.similarity_metric not in ("cosine", "dot_product", "l2_distance"):
@@ -69,7 +68,7 @@ class UnifiedConceptClassifier(nn.Module):
                 raise ValueError("baseline_type must be one of: linear, random")
             self.concept_embeddings = None
         else:
-            self.concept_embeddings = nn.Parameter(concept_embeddings, requires_grad=False)
+            self.concept_embeddings = nn.Parameter(concept_embeddings, requires_grad=not freeze_concept_embeddings)
 
         # learnable temperature scaling for similarity-based scores
         self.temperature = nn.Parameter(torch.tensor(float(temperature)), requires_grad=True)
@@ -174,29 +173,31 @@ class UnifiedConceptClassifier(nn.Module):
 
         if self.baseline:
             if self.baseline_type == "linear":
-                return self.baseline_head(projected) / self.temperature
+                return self.baseline_head(projected)
 
             if self.similarity_metric == "cosine":
                 projected_norm = F.normalize(projected, p=2, dim=-1)
                 random_classifier_norm = F.normalize(self.random_classifier, p=2, dim=-1)
-                return torch.matmul(projected_norm, random_classifier_norm.t()) / self.temperature
+                return torch.matmul(projected_norm, random_classifier_norm.t())
+            
             if self.similarity_metric == "dot_product":
-                return torch.matmul(projected, self.random_classifier.t()) / self.temperature
+                return torch.matmul(projected, self.random_classifier.t())
 
             diff = projected.unsqueeze(1) - self.random_classifier.unsqueeze(0)
             l2_dist = torch.norm(diff, p=2, dim=-1)
-            return -l2_dist / self.temperature
+            return -l2_dist 
 
         if self.similarity_metric == "cosine":
             projected = F.normalize(projected, p=2, dim=-1)
             concept_norm = F.normalize(self.concept_embeddings, p=2, dim=-1)
-            return torch.matmul(projected, concept_norm.t()) / self.temperature
+            return torch.matmul(projected, concept_norm.t())
+        
         if self.similarity_metric == "dot_product":
-            return torch.matmul(projected, self.concept_embeddings.t()) / self.temperature
+            return torch.matmul(projected, self.concept_embeddings.t())
 
         diff = projected.unsqueeze(1) - self.concept_embeddings.unsqueeze(0)
         l2_dist = torch.norm(diff, p=2, dim=-1)
-        return -l2_dist / self.temperature
+        return -l2_dist
 
     def weighted_aggregate_logits(self, scores):
         """Aggregate each concept logit with its ancestors using precomputed depth weights."""
@@ -208,10 +209,6 @@ class UnifiedConceptClassifier(nn.Module):
         ancestor_scores = scores[:, safe_index]
         weights = self.weighted_ancestor_weights.to(device=scores.device, dtype=scores.dtype).unsqueeze(0)
         return (ancestor_scores * weights).sum(dim=1)
-
-    def apply_weighted_hierarchy_log_softmax(self, scores):
-        aggregated = self.weighted_aggregate_logits(scores)
-        return F.log_softmax(aggregated, dim=1)
 
     def _collect_active_hierarchy_from_targets(self, targets):
         """Collect active roots and per-parent active children from target paths."""
@@ -324,12 +321,6 @@ class UnifiedConceptClassifier(nn.Module):
 
         return log_prob
 
-    def forward(self, batch, apply_hierarchy_softmax=True, hierarchy_mode="factorized"):
+    def forward(self, batch):
         scores = self.score(batch)
-        if apply_hierarchy_softmax and self.parent_index is not None:
-            if hierarchy_mode == "factorized":
-                return self.apply_softmax_all_groups(scores)
-            if hierarchy_mode == "weighted_agg":
-                return self.apply_weighted_hierarchy_log_softmax(scores)
-            raise ValueError("hierarchy_mode must be one of: factorized, weighted_agg")
         return scores

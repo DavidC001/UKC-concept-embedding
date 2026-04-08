@@ -10,8 +10,10 @@ import torch
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 import plotting as rplot
-from common import safe_norm
 
+def safe_norm(v: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+    n = v.norm()
+    return v / (n + eps)
 
 def plot_heatmaps(
     out_path: Path,
@@ -87,8 +89,6 @@ def plot_orthogonality_curves(out_path: Path, metrics: Dict[str, Dict[str, List[
 
 
 def plot_projection_feature_figure(out_path: Path, proj_stats: Dict[str, dict]) -> None:
-    """Recreate paper Figure-3 style train/test/random projection diagnostics."""
-
     def draw_panel(ax, data: dict, title: str):
         n = len(data["train_mean"])
         if n == 0:
@@ -111,7 +111,7 @@ def plot_projection_feature_figure(out_path: Path, proj_stats: Dict[str, dict]) 
 
         ax.set_ylim(-1.0, 2.0)
         ax.set_title(title)
-        ax.set_xlabel("Binary Features in WordNet Hierarchy")
+        ax.set_xlabel("Binary Features in Hierarchy")
 
     fig, axs = plt.subplots(1, 2, figsize=(14, 4.8))
     draw_panel(axs[0], proj_stats["original"], "Original Unembeddings")
@@ -123,80 +123,6 @@ def plot_projection_feature_figure(out_path: Path, proj_stats: Dict[str, dict]) 
     fig.tight_layout()
     fig.savefig(out_path, dpi=250, bbox_inches="tight")
     plt.close(fig)
-
-
-def plot_animal_plant_subtree(
-    out_path: Path,
-    hgraph: nx.DiGraph,
-    concepts_df,
-    animal_root: int,
-    plant_root: int,
-    depth: int,
-) -> None:
-    id_to_label = dict(zip(concepts_df["id"].astype(int), concepts_df["label"]))
-
-    def bfs_subgraph(start: int, max_depth: int) -> nx.DiGraph:
-        nodes = {start}
-        frontier = {start}
-        for _ in range(max_depth):
-            nxt = set()
-            for u in frontier:
-                for v in hgraph.successors(u):
-                    nxt.add(v)
-            nodes.update(nxt)
-            frontier = nxt
-            if not frontier:
-                break
-        return nx.DiGraph(hgraph.subgraph(nodes))
-
-    animal_sub = bfs_subgraph(animal_root, depth)
-    plant_sub = bfs_subgraph(plant_root, depth)
-
-    fig, axs = plt.subplots(1, 2, figsize=(18, 8))
-    for ax, sub, ttl, color in [
-        (axs[0], animal_sub, "Animal subtree", "#2b8cbe"),
-        (axs[1], plant_sub, "Plant subtree", "#31a354"),
-    ]:
-        if sub.number_of_nodes() == 0:
-            ax.axis("off")
-            continue
-
-        levels = {}
-        roots = [n for n in sub.nodes if sub.in_degree(n) == 0]
-        start = roots[0] if roots else list(sub.nodes)[0]
-        levels[start] = 0
-        queue = [start]
-        while queue:
-            u = queue.pop(0)
-            for v in sub.successors(u):
-                if v not in levels:
-                    levels[v] = levels[u] + 1
-                    queue.append(v)
-
-        pos = {}
-        by_level: Dict[int, List[int]] = {}
-        for n, lv in levels.items():
-            by_level.setdefault(lv, []).append(n)
-        for lv, nodes in by_level.items():
-            xs = np.linspace(0.05, 0.95, num=max(2, len(nodes)))
-            for i, n in enumerate(nodes):
-                x = float(xs[i if len(nodes) > 1 else 0])
-                y = 1.0 - (lv / max(1, max(by_level.keys())))
-                pos[n] = (x, y)
-
-        nx.draw_networkx_edges(sub, pos=pos, ax=ax, edge_color="#777777", alpha=0.6, width=1.2)
-        nx.draw_networkx_nodes(sub, pos=pos, ax=ax, node_color=color, alpha=0.2, node_size=500)
-
-        labels = {n: id_to_label.get(int(n), str(n)) for n in sub.nodes}
-        nx.draw_networkx_labels(sub, pos=pos, labels=labels, ax=ax, font_size=8)
-
-        ax.set_title(ttl)
-        ax.set_axis_off()
-
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=250, bbox_inches="tight")
-    plt.close(fig)
-
 
 def run_visual_2d(
     out_path: Path,

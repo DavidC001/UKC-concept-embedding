@@ -21,8 +21,8 @@ from WSD.datasets.dataset import (
     load_all_splits,
     load_npz_data_or_build,
 )
-from WSD.datasets.formatters import SampleFormatter
-from WSD.scripts.build_hierarchy import build_and_save_hierarchy, load_hierarchy
+from WSD.utils.build_hierarchy import build_hierarchy
+from WSD.utils.build_precomputed_embeddings import validate_precomputed_alignment
 from WSD.common import move_batch_to_device, remap_labels_to_index_space
 from WSD.concepts import create_bidirectional_mappings, load_rote_embeddings, load_uk_id_to_concept_id
 from WSD.evaluation import (
@@ -36,22 +36,22 @@ from WSD.evaluation import (
 )
 from WSD.model import EncoderBackbone, UnifiedConceptClassifier
 from WSD.training.engine import (
-    hierarchy_is_compatible,
     is_improved,
     resolve_monitor_value,
     run_epoch,
     run_validation_loss,
-    validate_precomputed_alignment,
 )
+from WSD.config import WSDConfig, cfg_asdict
 
 
-def _update_best_directory(best_model_path, run_dir, run_name, monitor_name, monitor_value, epoch, output_dir):
+def _update_best_directory(best_model_path, cfg, run_dir, run_name, monitor_name, monitor_value, epoch, output_dir):
     """
     Update the BEST directory with the current best model for this run.
     
     Creates a BEST/{run_name}/ subdirectory and maintains:
     - best_model.pt: the actual model weights
     - best_metadata.json: metadata about the best model for this run
+    - config.json: a copy of the config used for this run (for reproducibility)
     
     This ensures multiple runs don't overwrite each other.
     """
@@ -76,6 +76,12 @@ def _update_best_directory(best_model_path, run_dir, run_name, monitor_name, mon
     with open(metadata_file, "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)
     
+    # save cfg for reproducibility
+    cfg_dict = cfg_asdict(cfg)
+    cfg_file = os.path.join(best_run_dir, "config.json")
+    with open(cfg_file, "w", encoding="utf-8") as f:
+        json.dump(cfg_dict, f, indent=2)
+    
     print(f"Updated BEST/{run_name}/ directory with best model from epoch {epoch}")
 
 
@@ -85,8 +91,7 @@ def _evaluate(
     device,
     concept_id_to_index,
     index_to_concept_id,
-    output_file,
-    hierarchy_loss_type,
+    output_file
 ):
     model.eval()
     all_preds = []
@@ -94,7 +99,7 @@ def _evaluate(
     with torch.no_grad():
         for batch in tqdm(loader, desc="Eval", leave=False):
             batch = move_batch_to_device(batch, device)
-            scores = model(batch, apply_hierarchy_softmax=False)
+            scores = model(batch)
             
             candidates = batch["candidates"]
             
@@ -113,12 +118,12 @@ def _evaluate(
     return len(all_preds)
 
 
-def train_unified(cfg):
+def train(cfg : WSDConfig):
     os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     baseline_suffix = f"_baseline_{cfg.BASELINE_TYPE}" if getattr(cfg, "BASELINE", False) else ""
-    run_name = f"{timestamp}_{cfg.TRAINING_MODE}_{cfg.ENCODER_TRAIN_MODE}{baseline_suffix}"
+    run_name = f"{timestamp}_{cfg.TRAINING_MODE}_{cfg.LOSS_TYPE}{baseline_suffix}"
     run_dir = os.path.join(cfg.OUTPUT_DIR, run_name)
     os.makedirs(run_dir, exist_ok=True)
     report_file = os.path.join(run_dir, "evaluation_report.txt")
@@ -126,7 +131,7 @@ def train_unified(cfg):
     with open(report_file, "w", encoding="utf-8") as f:
         f.write(f"Run: {run_name}\n")
         f.write(f"Training mode: {cfg.TRAINING_MODE}\n")
-        f.write(f"Encoder train mode: {cfg.ENCODER_TRAIN_MODE}\n")
+        f.write(f"Loss type: {cfg.LOSS_TYPE}\n")
         f.write(f"Baseline: {getattr(cfg, 'BASELINE', False)}\n")
         f.write(f"Baseline type: {getattr(cfg, 'BASELINE_TYPE', 'linear')}\n")
         f.write("\n")
@@ -146,16 +151,12 @@ def train_unified(cfg):
     uk_id_to_concept_id = load_uk_id_to_concept_id(cfg.CONCEPTS_CSV)
     concept_embeddings = load_rote_embeddings(cfg.ROTE_MODEL)
     num_concepts = int(concept_embeddings.shape[0])
-    hierarchy_data = load_hierarchy(cfg.HIERARCHY_CACHE_PATH)
-    if not hierarchy_is_compatible(hierarchy_data, concept_id_to_index, num_concepts):
-        print("Hierarchy cache is incompatible with current mappings; rebuilding cache...")
-        hierarchy_data = build_and_save_hierarchy(cfg.HIERARCHY_CACHE_PATH)
+    hierarchy_data = build_hierarchy(entity_to_id_csv=cfg.ENTITY_TO_ID, concept_rel_csv=cfg.CONCEPT_REL_CSV)
 
     split_map = load_all_splits(
         cfg.TRAIN_TSV,
         cfg.EVAL_TSV,
         cfg.TEST_TSV,
-        max_label_len=cfg.MAX_SEQUENCE_LENGTH,
     )
     for split_name in ("train", "eval", "test"):
         split_map[split_name].labels = remap_labels_to_index_space(
@@ -190,6 +191,7 @@ def train_unified(cfg):
             concept_id_to_index=concept_id_to_index,
             num_concepts=num_concepts,
         )
+        
         validate_precomputed_alignment(npz_data, split_map)
         loaders = build_dataloaders_precomputed(
             npz_data=npz_data,
@@ -198,6 +200,7 @@ def train_unified(cfg):
             eval_batch_size=cfg.EVAL_BATCH_SIZE,
         )
         input_dim = int(npz_data["train_embeddings"].shape[1])
+        
     elif cfg.TRAINING_MODE == "encoder":
         encoder_backbone = EncoderBackbone(
             model_name=cfg.ENCODER_MODEL,
@@ -205,26 +208,21 @@ def train_unified(cfg):
             lora_r=cfg.LORA_R,
             lora_alpha=cfg.LORA_ALPHA,
             lora_dropout=cfg.DROPOUT,
-            token_pooling=cfg.ENCODER_TOKEN_POOLING,
-        )
-        formatter = SampleFormatter.from_preset_or_template(
-            preset=cfg.FORMATTER_PRESET,
-            template=cfg.FORMATTER_TEMPLATE,
         )
         loaders = build_dataloaders_encoder(
             split_map=split_map,
             tokenizer=encoder_backbone.tokenizer,
-            formatter=formatter,
             batch_size=cfg.BATCH_SIZE,
             eval_batch_size=cfg.EVAL_BATCH_SIZE,
             max_length=cfg.MAX_SEQUENCE_LENGTH,
-            token_pooling=cfg.ENCODER_TOKEN_POOLING,
         )
         input_dim = encoder_backbone.hidden_size
+        
     else:
         raise ValueError("TRAINING_MODE must be one of: precomputed, encoder")
 
-    hierarchy_loss_type = str(getattr(cfg, "HIERARCHY_LOSS_TYPE", "factorized"))
+
+    loss_type = str(getattr(cfg, "LOSS_TYPE", "standard"))
     weighted_hierarchy_alpha = float(getattr(cfg, "WEIGHTED_HIERARCHY_ALPHA", 0.5))
 
     model = UnifiedConceptClassifier(
@@ -237,8 +235,8 @@ def train_unified(cfg):
         encoder_backbone=encoder_backbone,
         parent_index=hierarchy_data["parent_index"].to(cfg.DEVICE),
         hierarchy_data=hierarchy_data,
-        hierarchy_loss_type=hierarchy_loss_type,
         weighted_hierarchy_alpha=weighted_hierarchy_alpha,
+        freeze_concept_embeddings=getattr(cfg, "FREEZE_CONCEPT_EMBEDDINGS", True),
         baseline=getattr(cfg, "BASELINE", False),
         baseline_type=getattr(cfg, "BASELINE_TYPE", "linear"),
         similarity_metric=getattr(cfg, "SIMILARITY_METRIC", "cosine"),
@@ -253,7 +251,6 @@ def train_unified(cfg):
 
     early_stopping_enabled = bool(getattr(cfg, "USE_EARLY_STOPPING", False))
     early_stopping_patience = int(getattr(cfg, "EARLY_STOPPING_PATIENCE", 3))
-    early_stopping_min_delta = float(getattr(cfg, "EARLY_STOPPING_MIN_DELTA", 0.0))
     early_stopping_monitor = str(getattr(cfg, "EARLY_STOPPING_MONITOR", "eval_f1"))
     early_stopping_mode = str(getattr(cfg, "EARLY_STOPPING_MODE", "max"))
 
@@ -279,10 +276,7 @@ def train_unified(cfg):
             optimizer=optimizer,
             device=cfg.DEVICE,
             concept_id_to_index=concept_id_to_index,
-            use_hierarchy_loss=cfg.USE_HIERARCHY_LOSS,
-            hierarchy_loss_type=hierarchy_loss_type,
-            use_extra_negative_sampling=cfg.USE_EXTRA_NEGATIVE_SAMPLING,
-            num_extra_negatives=cfg.NUM_EXTRA_NEGATIVES,
+            loss_type=loss_type,
             move_batch_to_device=move_batch_to_device,
         )
         print(f"Epoch {epoch}: train_loss={train_loss:.4f}")
@@ -305,7 +299,6 @@ def train_unified(cfg):
             concept_id_to_index,
             index_to_concept_id,
             eval_file,
-            hierarchy_loss_type=hierarchy_loss_type,
         )
         n_test = _evaluate(
             model,
@@ -314,15 +307,13 @@ def train_unified(cfg):
             concept_id_to_index,
             index_to_concept_id,
             test_file,
-            hierarchy_loss_type=hierarchy_loss_type,
         )
 
         eval_loss = run_validation_loss(
             model=model,
             loader=loaders["eval"],
             device=cfg.DEVICE,
-            use_hierarchy_loss=cfg.USE_HIERARCHY_LOSS,
-            hierarchy_loss_type=hierarchy_loss_type,
+            loss_type=loss_type,
             move_batch_to_device=move_batch_to_device,
         )
 
@@ -366,7 +357,7 @@ def train_unified(cfg):
             eval_loss=eval_loss,
         )
 
-        if is_improved(monitor_value, best_monitor_value, early_stopping_mode, early_stopping_min_delta):
+        if is_improved(monitor_value, best_monitor_value, early_stopping_mode):
             best_monitor_value = monitor_value
             best_epoch = epoch
             epochs_without_improvement = 0
@@ -383,6 +374,7 @@ def train_unified(cfg):
                 monitor_value=monitor_value,
                 epoch=epoch,
                 output_dir=cfg.OUTPUT_DIR,
+                cfg=cfg,
             )
         else:
             epochs_without_improvement += 1

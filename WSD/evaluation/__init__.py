@@ -9,6 +9,8 @@ from .scorer import (
     log_scores_to_wandb,
     print_scores_table,
 )
+from .pipeline import evaluate
+
 
 __all__ = [
     "evaluate_with_candidates",
@@ -19,4 +21,5 @@ __all__ = [
     "append_evaluation_report",
     "log_scores_to_wandb",
     "load_id_to_pos",
+    "evaluate",
 ]

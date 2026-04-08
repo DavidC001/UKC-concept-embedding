@@ -9,21 +9,40 @@ import networkx as nx
 import numpy as np
 import torch
 
-from category import estimate_single_dir_from_embeddings
-from common import progress_iter, safe_norm
+from tqdm import tqdm
 
+from sklearn.covariance import ledoit_wolf
+
+def safe_norm(v: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+    n = v.norm()
+    return v / (n + eps)
+
+def estimate_single_dir_from_embeddings(category_embeddings: torch.Tensor):
+    if not isinstance(category_embeddings, torch.Tensor):
+        category_embeddings = torch.tensor(category_embeddings)
+
+    category_mean = category_embeddings.mean(dim=0)
+
+    cov = ledoit_wolf(category_embeddings.cpu().numpy())
+    cov = torch.tensor(cov[0], device=category_embeddings.device, dtype=category_embeddings.dtype)
+
+    pseudo_inv = torch.linalg.pinv(cov)
+    lda_dir = pseudo_inv @ category_mean
+    lda_dir = lda_dir / torch.norm(lda_dir)
+    lda_dir = (category_mean @ lda_dir) * lda_dir
+
+    return lda_dir, category_mean
 
 def estimate_dirs(
     g_whitened: torch.Tensor,
     ent2idx: Dict[str, int],
     node_to_members: Dict[int, List[int]],
-    show_progress: bool = False,
 ) -> Dict[int, Dict[str, torch.Tensor]]:
+    """Estimate category directions for each node with enough members, using both LDA and mean-based methods."""
     dirs: Dict[int, Dict[str, torch.Tensor]] = {}
 
-    items = progress_iter(
+    items = tqdm(
         node_to_members.items(),
-        enabled=show_progress,
         desc="Estimating category directions",
         total=len(node_to_members),
     )
@@ -41,19 +60,19 @@ def estimate_dirs(
 
 
 def cosine_matrix_from_dirs(sorted_nodes: List[int], dirs: Dict[int, Dict[str, torch.Tensor]], version: str):
+    """Compute cosine similarity matrix between category directions of the given nodes."""
     vecs = []
-    kept_nodes = []
+    
     for n in sorted_nodes:
         if n in dirs:
             vecs.append(safe_norm(dirs[n][version]).unsqueeze(0))
-            kept_nodes.append(n)
 
     if not vecs:
         return np.zeros((0, 0), dtype=np.float32), []
 
     mat = torch.cat(vecs, dim=0)
     cos = (mat @ mat.T).cpu().numpy()
-    return cos, kept_nodes
+    return cos
 
 
 def shortest_path_matrix(g: nx.DiGraph, nodes: List[int]) -> np.ndarray:
@@ -80,8 +99,18 @@ def compute_orthogonality_metrics(
     dirs_shuffled: Dict[int, Dict[str, torch.Tensor]],
     version: str,
     seed: int,
-    show_progress: bool = False,
 ) -> Dict[str, Dict[str, List[float]]]:
+    """
+    Compute orthogonality metrics for category directions, comparing original vs shuffled embeddings, and parent vs random parent.
+    Returns a dictionary with the metrics for both "b" (child-parent) and "e" (parent-grandparent) relationships, for both original and shuffled spaces, and for both parent and random parent comparisons.
+    Arguments:
+    - hgraph: the hierarchy graph
+    - sorted_nodes: the list of nodes for which we have category directions, sorted by id
+    - dirs_original: the estimated category directions for original embeddings
+    - dirs_shuffled: the estimated category directions for shuffled embeddings
+    - version: which direction version to use ("lda" or "mean")
+    - seed: random seed for reproducibility of random parent selection
+    """
     random.seed(seed)
 
     available = [n for n in sorted_nodes if n in dirs_original and n in dirs_shuffled]
@@ -114,9 +143,8 @@ def compute_orthogonality_metrics(
         },
     }
 
-    nodes_iter = progress_iter(
+    nodes_iter = tqdm(
         available,
-        enabled=show_progress,
         desc="Computing orthogonality metrics",
         total=len(available),
     )
@@ -195,11 +223,6 @@ def save_json(path: Path, obj: dict) -> None:
         json.dump(obj, f, indent=2)
 
 
-def write_text_log(path: Path, lines: List[str]) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-
-
 def compute_projection_feature_stats(
     g_whitened: torch.Tensor,
     g_shuffled: torch.Tensor,
@@ -238,7 +261,7 @@ def compute_projection_feature_stats(
         if len(test_idx) < 2:
             continue
 
-        # Estimate category direction from train subset, as in paper Figure 3.
+        # Estimate category direction from train subset
         train_emb_orig = g_whitened[train_idx]
         train_emb_shuf = g_shuffled[train_idx]
         lda_orig, _ = estimate_single_dir_from_embeddings(train_emb_orig)
