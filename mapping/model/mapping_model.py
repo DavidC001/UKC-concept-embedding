@@ -7,6 +7,7 @@ import torch.nn as nn
 class LinearMapper(nn.Module):
     def __init__(self, in_dim: int, out_dim: int, hidden: int = 1024) -> None:
         super().__init__()
+        # self.net = nn.Linear(in_dim, out_dim)
         self.net = nn.Sequential(
             nn.Linear(in_dim, hidden),
             nn.ReLU(),

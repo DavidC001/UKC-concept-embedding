@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset, random_split
 from tqdm.auto import tqdm
@@ -97,14 +96,26 @@ def train_mapper(
     model.eval()
     if len(test_set) > 0:
         with torch.no_grad():
-            test_x = torch.cat([xb for xb, _ in test_loader]).to(device)
-            test_y = torch.cat([yb for _, yb in test_loader]).to(device)
-            pred = model(test_x).cpu().numpy()
-            test_np = test_y.cpu().numpy()
-            pred_norm = pred / np.maximum(np.linalg.norm(pred, axis=1, keepdims=True), 1e-12)
-            test_norm = test_np / np.maximum(np.linalg.norm(test_np, axis=1, keepdims=True), 1e-12)
-            test_cos = float((pred_norm * test_norm).sum(axis=1).mean())
-            test_mse = float(((pred - test_np) ** 2).mean())
+            total_cos = 0.0
+            total_sqerr = 0.0
+            total_examples = 0
+            total_values = 0
+
+            for xb, yb in test_loader:
+                xb = xb.to(device)
+                yb = yb.to(device)
+                pred = model(xb)
+
+                pred_norm = pred / pred.norm(dim=1, keepdim=True).clamp(min=1e-12)
+                yb_norm = yb / yb.norm(dim=1, keepdim=True).clamp(min=1e-12)
+                total_cos += float((pred_norm * yb_norm).sum(dim=1).sum().item())
+
+                total_sqerr += float(((pred - yb) ** 2).sum().item())
+                total_examples += xb.size(0)
+                total_values += xb.size(0) * pred.size(1)
+
+            test_cos = total_cos / max(total_examples, 1)
+            test_mse = total_sqerr / max(total_values, 1)
     else:
         test_cos = float("nan")
         test_mse = float("nan")
