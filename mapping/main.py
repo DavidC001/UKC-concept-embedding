@@ -40,6 +40,26 @@ def _to_device(device_str: str) -> torch.device:
     return torch.device(device_str)
 
 
+def _map_in_batches(
+    model: torch.nn.Module,
+    X: np.ndarray,
+    device: torch.device,
+    batch_size: int,
+) -> np.ndarray:
+    if batch_size <= 0:
+        raise ValueError("mapping inference batch size must be > 0")
+
+    x_t = torch.from_numpy(X).float()
+    mapped_chunks: list[np.ndarray] = []
+    model.eval()
+    with torch.no_grad():
+        for start in range(0, x_t.shape[0], batch_size):
+            end = min(start + batch_size, x_t.shape[0])
+            batch = x_t[start:end].to(device)
+            mapped_chunks.append(model(batch).cpu().numpy())
+    return np.concatenate(mapped_chunks, axis=0).astype(np.float32, copy=False)
+
+
 def main() -> None:
     cfg = parse_args()
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
@@ -74,6 +94,7 @@ def main() -> None:
 
     concepts_df = load_optional_concepts(cfg.concepts_csv)
     id_to_label = build_concept_id_to_label(concepts_df)
+    entity_id_to_label = {entity_id: id_to_label.get(entity_id, entity_id) for entity_id in entity_to_id.keys()}
 
     paired_idx, aligned_mask = align_concepts_to_rote(concept_ids, entity_to_id, id_to_label)
     matched = int(aligned_mask.sum())
@@ -112,17 +133,29 @@ def main() -> None:
     )
 
     result.model.eval()
-    with torch.no_grad():
-        mapped = result.model(torch.from_numpy(X).float().to(train_device)).cpu().numpy()
+    mapped = _map_in_batches(
+        model=result.model,
+        X=X,
+        device=train_device,
+        batch_size=cfg.mapping_inference_batch_size,
+    )
     mapped_norm = l2_normalize(mapped)
 
-    top_idx, top_scores = topk_neighbors(mapped_norm=mapped_norm, rote_norm=rote_norm, top_k=cfg.top_k)
+    top_idx, top_scores = topk_neighbors(
+        mapped_norm=mapped_norm,
+        rote_norm=rote_norm,
+        top_k=cfg.top_k,
+        query_chunk_size=cfg.nn_query_chunk_size,
+        corpus_chunk_size=cfg.nn_corpus_chunk_size,
+    )
     save_topk_report(
         out_path=cfg.output_dir / "topk_neighbors.csv",
         concept_ids=aligned_ids,
         top_idx=top_idx,
         top_scores=top_scores,
         idx_to_entity=idx_to_entity,
+        concept_id_to_label=id_to_label,
+        entity_id_to_label=entity_id_to_label,
     )
 
     print(f"Saved top-k report: {cfg.output_dir / 'topk_neighbors.csv'}")
@@ -132,6 +165,8 @@ def main() -> None:
             concept_ids=aligned_ids,
             top1_indices=top_idx[:, 0],
             idx_to_entity=idx_to_entity,
+            concept_id_to_label=id_to_label,
+            entity_id_to_label=entity_id_to_label,
             concept_relations_csv=cfg.concept_relations_csv,
             output_dir=cfg.output_dir,
             sample_size=cfg.geodesic_sample_size,

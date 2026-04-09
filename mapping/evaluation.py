@@ -1,16 +1,71 @@
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 
-def topk_neighbors(mapped_norm: np.ndarray, rote_norm: np.ndarray, top_k: int) -> tuple[np.ndarray, np.ndarray]:
-    sim = mapped_norm @ rote_norm.T
-    idx = np.argsort(-sim, axis=1)[:, :top_k]
-    scores = np.take_along_axis(sim, idx, axis=1)
-    return idx, scores
+def topk_neighbors(
+    mapped_norm: np.ndarray,
+    rote_norm: np.ndarray,
+    top_k: int,
+    query_chunk_size: int = 512,
+    corpus_chunk_size: int = 4096,
+) -> tuple[np.ndarray, np.ndarray]:
+    if top_k <= 0:
+        raise ValueError("top_k must be > 0")
+    if query_chunk_size <= 0 or corpus_chunk_size <= 0:
+        raise ValueError("chunk sizes must be > 0")
+    if rote_norm.shape[0] == 0:
+        raise ValueError("rote_norm is empty")
+
+    k = min(top_k, rote_norm.shape[0])
+    n_queries = mapped_norm.shape[0]
+
+    out_idx = np.full((n_queries, k), -1, dtype=np.int64)
+    out_scores = np.full((n_queries, k), -np.inf, dtype=np.float32)
+
+    for q_start in range(0, n_queries, query_chunk_size):
+        q_end = min(q_start + query_chunk_size, n_queries)
+        q_block = mapped_norm[q_start:q_end]
+
+        best_scores = np.full((q_block.shape[0], k), -np.inf, dtype=np.float32)
+        best_idx = np.full((q_block.shape[0], k), -1, dtype=np.int64)
+
+        for c_start in range(0, rote_norm.shape[0], corpus_chunk_size):
+            c_end = min(c_start + corpus_chunk_size, rote_norm.shape[0])
+            c_block = rote_norm[c_start:c_end]
+
+            sim_block = q_block @ c_block.T
+            local_k = min(k, sim_block.shape[1])
+
+            local_pos = np.argpartition(-sim_block, kth=local_k - 1, axis=1)[:, :local_k]
+            local_scores = np.take_along_axis(sim_block, local_pos, axis=1)
+            local_idx = local_pos.astype(np.int64, copy=False) + c_start
+
+            merged_scores = np.concatenate([best_scores, local_scores], axis=1)
+            merged_idx = np.concatenate([best_idx, local_idx], axis=1)
+
+            keep_pos = np.argpartition(-merged_scores, kth=k - 1, axis=1)[:, :k]
+            best_scores = np.take_along_axis(merged_scores, keep_pos, axis=1)
+            best_idx = np.take_along_axis(merged_idx, keep_pos, axis=1)
+
+        order = np.argsort(-best_scores, axis=1)
+        out_scores[q_start:q_end] = np.take_along_axis(best_scores, order, axis=1)
+        out_idx[q_start:q_end] = np.take_along_axis(best_idx, order, axis=1)
+
+    return out_idx, out_scores
+
+
+def _resolve_label(raw_id: str, id_to_label: dict[str, str] | None) -> str:
+    if id_to_label is None:
+        return str(raw_id)
+    label = id_to_label.get(str(raw_id))
+    if label is None or not str(label).strip():
+        return str(raw_id)
+    return str(label)
 
 
 def save_topk_report(
@@ -19,29 +74,47 @@ def save_topk_report(
     top_idx: np.ndarray,
     top_scores: np.ndarray,
     idx_to_entity: dict[int, str],
+    concept_id_to_label: dict[str, str] | None = None,
+    entity_id_to_label: dict[str, str] | None = None,
 ) -> None:
-    rows: list[dict[str, object]] = []
-    for i, concept_id in enumerate(concept_ids):
-        for rank in range(top_idx.shape[1]):
-            rote_idx = int(top_idx[i, rank])
-            rows.append(
-                {
-                    "concept_id": str(concept_id),
-                    "rank": rank + 1,
-                    "rote_index": rote_idx,
-                    "rote_entity": idx_to_entity.get(rote_idx, ""),
-                    "cosine": float(top_scores[i, rank]),
-                }
-            )
-
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows).to_csv(out_path, index=False)
+    with out_path.open("w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow([
+            "concept_id",
+            "concept_label",
+            "rank",
+            "rote_index",
+            "rote_entity",
+            "rote_entity_label",
+            "cosine",
+        ])
+        for i, concept_id in enumerate(concept_ids):
+            concept_id_str = str(concept_id)
+            concept_label = _resolve_label(concept_id_str, concept_id_to_label)
+            for rank in range(top_idx.shape[1]):
+                rote_idx = int(top_idx[i, rank])
+                rote_entity = idx_to_entity.get(rote_idx, "")
+                rote_entity_label = _resolve_label(rote_entity, entity_id_to_label)
+                writer.writerow(
+                    [
+                        concept_id_str,
+                        concept_label,
+                        rank + 1,
+                        rote_idx,
+                        rote_entity,
+                        rote_entity_label,
+                        float(top_scores[i, rank]),
+                    ]
+                )
 
 
 def run_geodesic_analysis(
     concept_ids: np.ndarray,
     top1_indices: np.ndarray,
     idx_to_entity: dict[int, str],
+    concept_id_to_label: dict[str, str] | None,
+    entity_id_to_label: dict[str, str] | None,
     concept_relations_csv: Path,
     output_dir: Path,
     sample_size: int,
@@ -79,10 +152,20 @@ def run_geodesic_analysis(
     sample_idx = np.random.choice(n, sample_n, replace=False)
 
     distances: list[int] = []
+    random_distances: list[int] = []
+    entity_values = np.array(list(idx_to_entity.values()), dtype=object)
+    if entity_values.size == 0:
+        print("Skipping random baseline geodesic analysis: idx_to_entity is empty")
+
+    distance_rows: list[dict[str, object]] = []
+    random_rows: list[dict[str, object]] = []
+
     for i in sample_idx:
         src = str(concept_ids[i])
+        src_label = _resolve_label(src, concept_id_to_label)
         pred_idx = int(top1_indices[i])
         tgt = idx_to_entity.get(pred_idx)
+        tgt_label = _resolve_label(tgt or "", entity_id_to_label) if tgt is not None else ""
         if tgt is None:
             continue
         if src not in graph or tgt not in graph:
@@ -90,12 +173,44 @@ def run_geodesic_analysis(
         try:
             d = nx.shortest_path_length(graph, source=src, target=tgt)
             distances.append(int(d))
+            distance_rows.append(
+                {
+                    "concept_id": src,
+                    "concept_label": src_label,
+                    "mapped_entity": tgt,
+                    "mapped_entity_label": tgt_label,
+                    "geodesic_distance": int(d),
+                }
+            )
         except nx.NetworkXNoPath:
             continue
 
+        if entity_values.size > 0:
+            rand_tgt = str(entity_values[np.random.randint(0, entity_values.size)])
+            rand_tgt_label = _resolve_label(rand_tgt, entity_id_to_label)
+            if rand_tgt in graph:
+                try:
+                    rd = nx.shortest_path_length(graph, source=src, target=rand_tgt)
+                    random_distances.append(int(rd))
+                    random_rows.append(
+                        {
+                            "concept_id": src,
+                            "concept_label": src_label,
+                            "random_entity": rand_tgt,
+                            "random_entity_label": rand_tgt_label,
+                            "geodesic_distance": int(rd),
+                        }
+                    )
+                except nx.NetworkXNoPath:
+                    pass
+
     output_dir.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame({"geodesic_distance": distances}).to_csv(
+    pd.DataFrame(distance_rows if distance_rows else {"geodesic_distance": distances}).to_csv(
         output_dir / "geodesic_distances.csv",
+        index=False,
+    )
+    pd.DataFrame(random_rows if random_rows else {"geodesic_distance": random_distances}).to_csv(
+        output_dir / "geodesic_distances_random.csv",
         index=False,
     )
 
@@ -115,5 +230,31 @@ def run_geodesic_analysis(
         plt.tight_layout()
         plt.savefig(output_dir / "geodesic_distance.png", dpi=160)
         plt.close()
+
+        if random_distances:
+            bins_random = list(range(0, max(random_distances) + 2))
+            plt.figure(figsize=(7, 4))
+            plt.hist(random_distances, bins=bins_random, color="#ad6a3d", edgecolor="black")
+            plt.title("Geodesic distance for random baseline entity")
+            plt.xlabel("Geodesic distance")
+            plt.ylabel("Count")
+            plt.tight_layout()
+            plt.savefig(output_dir / "geodesic_distance_random.png", dpi=160)
+            plt.close()
+
+            bins_max = max(max(distances), max(random_distances))
+            bins_cmp = list(range(0, bins_max + 2))
+            plt.figure(figsize=(8, 4.5))
+            plt.hist(distances, bins=bins_cmp, alpha=0.55, color="#2f7f7f", edgecolor="black", label="Mapped top-1")
+            plt.hist(random_distances, bins=bins_cmp, alpha=0.55, color="#ad6a3d", edgecolor="black", label="Random baseline")
+            plt.title("Geodesic distance: mapped top-1 vs random baseline")
+            plt.xlabel("Geodesic distance")
+            plt.ylabel("Count")
+            plt.legend()
+            plt.tight_layout()
+            plt.savefig(output_dir / "geodesic_distance_comparison.png", dpi=160)
+            plt.close()
+        else:
+            print("No random baseline geodesic distances found")
     except ImportError:
         print("Skipping geodesic plot: matplotlib is not installed")
