@@ -91,6 +91,8 @@ class WSDConfig:
 
     PROJECT_NUM_LAYERS: int = 1
     """Number of layers in the projection head (if using a projection head)."""
+    HIDDEN_DIM: int = 1024
+    """Hidden dimension size for the projection head (if using a projection head)."""
 
     OUTPUT_DIR: str = str(Path(__file__).resolve().parent.parent / "WSD/outputs")
     """Directory where model checkpoints and logs will be saved."""

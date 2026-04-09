@@ -192,7 +192,7 @@ def train(cfg : WSDConfig):
     model = UnifiedConceptClassifier(
         concept_embeddings=concept_embeddings,
         input_dim=input_dim,
-        hidden_dim=1024,
+        hidden_dim=cfg.HIDDEN_DIM,
         output_dim=concept_embeddings.shape[1],
         dropout=cfg.DROPOUT,
         temperature=0.1,
