@@ -15,7 +15,7 @@ from mapping.config import parse_args
 from mapping.evaluation import run_geodesic_analysis, save_topk_report, topk_neighbors
 from mapping.model.gloss_encoder import choose_device, encode_glosses
 from mapping.trainer import save_checkpoint, train_mapper
-from mapping.utils.gloss_io import l2_normalize, load_concept_glosses, load_optional_concepts, save_embeddings_npz
+from mapping.utils.gloss_io import l2_normalize, load_concept_glosses, load_concepts, save_embeddings_npz
 from mapping.utils.load_embeddings import (
     align_concepts_to_rote,
     build_concept_id_to_label,
@@ -89,13 +89,15 @@ def main() -> None:
     rote_emb = load_rote_embeddings(cfg.rote_checkpoint)
     rote_norm = l2_normalize(rote_emb)
 
+    # load concept_id to matrix idx mapping from entity_to_id.pickle
     entity_to_id = load_entity_to_id(cfg.entity_to_id)
     idx_to_entity = {idx: ent for ent, idx in entity_to_id.items()}
 
-    concepts_df = load_optional_concepts(cfg.concepts_csv)
+    concepts_df = load_concepts(cfg.concepts_csv)
+    # build concept_id to label mapping from concepts.csv
     id_to_label = build_concept_id_to_label(concepts_df)
-    entity_id_to_label = {entity_id: id_to_label.get(entity_id, entity_id) for entity_id in entity_to_id.keys()}
-
+    entity_id_to_label = {ent_id: id_to_label.get(ent_id, "NONE") for ent_id in entity_to_id.keys()}
+    
     paired_idx, aligned_mask = align_concepts_to_rote(concept_ids, entity_to_id, id_to_label)
     matched = int(aligned_mask.sum())
     print(f"Aligned concepts: {matched}/{len(concept_ids)}")
