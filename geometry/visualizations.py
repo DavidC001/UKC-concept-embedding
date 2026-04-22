@@ -103,7 +103,7 @@ def plot_projection_feature_figure(out_path: Path, proj_stats: Dict[str, dict]) 
             "random": "#f6b43f",
         }
 
-        for split in ["train", "test", "random"]:
+        for split in ["test", "random"]:
             mean = np.asarray(data[f"{split}_mean"], dtype=np.float32)
             std = np.asarray(data[f"{split}_std"], dtype=np.float32)
             ax.plot(x, mean, color=colors[split], linewidth=1.2, label=split)
