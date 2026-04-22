@@ -26,6 +26,8 @@ RELATION_MAP = {
     43: 'has_aspect'
 }
 
+exclude_relations = [43]
+
 DATA_DIR = "dataset/UKC_CUT_1"
 
 # Load concepts and relations from CSV files
@@ -47,6 +49,8 @@ triples_df.dropna(subset=['head_label', 'tail_label'], inplace=True)
 final_triples = triples_df[['src_con_id', 'relation_type', 'trg_con_id']]
 final_triples.columns = ['head', 'relation', 'tail']
 
+# exclude relations in exclude_relations
+final_triples = final_triples[~final_triples['relation'].isin(exclude_relations)]
 
 # filter only the triples with more than MIN_FREQ occurrences of head or tail in the dataset
 all_entities = pd.concat([final_triples["head"], final_triples["tail"]])
