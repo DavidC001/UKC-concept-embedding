@@ -59,9 +59,17 @@ def main(args: argparse.Namespace) -> None:
     hgraph = build_hierarchy_graph(args.concept_relations_csv, relation_type=args.hierarchy_relation_type)
     roots = graph_roots(hgraph)
     
+    # breakpoint()
+    
     # print number of roots
     print(f"Found {len(roots)} roots in the hierarchy graph.")
+    print("Root IDs and labels:")
+    for r in roots:
+        label = concepts_df.loc[concepts_df.id == r, "label"].values
+        label_str = label[0] if len(label) > 0 else "Unknown"
+        print(f" - ID: {r}, Label: {label_str}")
 
+    # breakpoint()
 
     # take subtrees of the animal and plant roots for focused analysis and visualization
     animal_root =  args.animal_root_id
@@ -239,19 +247,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=str, default="dataset/RotE/model.pt")
     parser.add_argument("--entity_to_id", type=str, default="dataset/RotE/entity_to_id.pickle")
+    
     parser.add_argument("--concepts_csv", type=str, default="dataset/concepts.csv")
     parser.add_argument("--concept_relations_csv", type=str, default="dataset/concept_relations.csv")
+    
     parser.add_argument("--hierarchy_relation_type", type=int, default=20)
     
     parser.add_argument("--animal_root_id", type=int, default=37)
     parser.add_argument("--plant_root_id", type=int, default=38)
     
     parser.add_argument("--min_category_size", type=int, default=25)
-    parser.add_argument("--subtree_depth", type=int, default=3)
-    parser.add_argument("--seed", type=int, default=100)
-    parser.add_argument("--output_dir", type=str, default="geometry/figures")
     parser.add_argument("--feature_train_ratio", type=float, default=0.8)
     parser.add_argument("--feature_random_sample_size", type=int, default=20000)
+    
+    parser.add_argument("--seed", type=int, default=100)
+    parser.add_argument("--output_dir", type=str, default="geometry/figures")
     return parser
 
 
