@@ -72,16 +72,20 @@ def build_concept_id_to_label(concepts_df: pd.DataFrame | None) -> dict[str, str
     if concepts_df is None:
         return {}
 
-    id_candidates = ["concept_id", "id", "uk_id"]
-    label_candidates = ["label", "concept_label", "name"]
-    id_col = next((c for c in id_candidates if c in concepts_df.columns), None)
-    label_col = next((c for c in label_candidates if c in concepts_df.columns), None)
+    id_candidates = "id"
+    label_candidates = "label"
+    
+    id_col = next((col for col in concepts_df.columns if id_candidates in col.lower()), None)
+    label_col = next((col for col in concepts_df.columns if label_candidates in col.lower()), None)
+    
     if id_col is None or label_col is None:
         return {}
 
     mapping: dict[str, str] = {}
-    for _, row in concepts_df[[id_col, label_col]].dropna().iterrows():
-        mapping[str(row[id_col])] = str(row[label_col]).strip()
+    for _, row in concepts_df.iterrows():
+        concept_id = str(row[id_col])
+        label = str(row[label_col])
+        mapping[concept_id] = label
     return mapping
 
 

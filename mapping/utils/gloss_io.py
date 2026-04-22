@@ -27,7 +27,7 @@ def load_concept_glosses(csv_path: Path) -> pd.DataFrame:
     return df
 
 
-def load_optional_concepts(concepts_csv: Path) -> pd.DataFrame | None:
+def load_concepts(concepts_csv: Path) -> pd.DataFrame | None:
     if not concepts_csv.exists():
         return None
     return pd.read_csv(concepts_csv)
