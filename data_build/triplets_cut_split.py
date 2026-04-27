@@ -28,7 +28,7 @@ RELATION_MAP = {
 
 exclude_relations = [43]
 
-DATA_DIR = "dataset/UKC_CUT_1"
+DATA_DIR = "dataset/UKC"
 
 # Load concepts and relations from CSV files
 concepts_df = pd.read_csv('dataset/concepts.csv', usecols=['id', 'label'])
@@ -120,6 +120,11 @@ while rare_entities:
 
 os.makedirs(DATA_DIR, exist_ok=True)
 train_df.to_csv(f"{DATA_DIR}/train", sep="\t", index=False, header=False)
+# if 0 copy the same content of train_df to valid and test, otherwise save the valid and test splits
+if VALID_RATIO == 0.0:
+    valid_df = train_df.copy()
+if TEST_RATIO == 0.0:
+    test_df = train_df.copy()
 valid_df.to_csv(f"{DATA_DIR}/valid", sep="\t", index=False, header=False)
 test_df.to_csv(f"{DATA_DIR}/test", sep="\t", index=False, header=False)
 
