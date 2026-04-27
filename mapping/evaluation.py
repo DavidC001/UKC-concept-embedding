@@ -14,6 +14,7 @@ def topk_neighbors(
     query_chunk_size: int = 512,
     corpus_chunk_size: int = 4096,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Compute top-k nearest neighbors based on cosine similarity, processing in chunks for memory efficiency."""
     if top_k <= 0:
         raise ValueError("top_k must be > 0")
     if query_chunk_size <= 0 or corpus_chunk_size <= 0:

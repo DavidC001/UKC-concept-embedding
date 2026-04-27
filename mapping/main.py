@@ -23,6 +23,8 @@ from mapping.utils.load_embeddings import (
     load_rote_embeddings,
 )
 
+from torch.utils.data import TensorDataset, random_split
+
 
 def set_seed(seed: int) -> None:
     random.seed(seed)
@@ -42,20 +44,19 @@ def _to_device(device_str: str) -> torch.device:
 
 def _map_in_batches(
     model: torch.nn.Module,
-    X: np.ndarray,
+    gloss_emb: torch.Tensor,
     device: torch.device,
     batch_size: int,
 ) -> np.ndarray:
     if batch_size <= 0:
         raise ValueError("mapping inference batch size must be > 0")
 
-    x_t = torch.from_numpy(X).float()
     mapped_chunks: list[np.ndarray] = []
     model.eval()
     with torch.no_grad():
-        for start in range(0, x_t.shape[0], batch_size):
-            end = min(start + batch_size, x_t.shape[0])
-            batch = x_t[start:end].to(device)
+        for start in range(0, gloss_emb.shape[0], batch_size):
+            end = min(start + batch_size, gloss_emb.shape[0])
+            batch = gloss_emb[start:end].to(device)
             mapped_chunks.append(model(batch).cpu().numpy())
     return np.concatenate(mapped_chunks, axis=0).astype(np.float32, copy=False)
 
@@ -108,16 +109,25 @@ def main() -> None:
     Y = rote_norm[paired_idx[aligned_mask]]
     aligned_ids = concept_ids[aligned_mask]
 
+    # split into train/val/test sets
+    dataset = TensorDataset(torch.from_numpy(X), torch.from_numpy(Y))
+    generator = torch.Generator().manual_seed(cfg.random_seed)
+    train_split = 1.0 - cfg.val_ratio - cfg.test_ratio
+    train_set, val_set, test_set = random_split(
+        dataset,
+        [train_split, cfg.val_ratio, cfg.test_ratio],
+        generator=generator,
+    )
+
     result = train_mapper(
-        X=X,
-        Y=Y,
+        train_set=train_set,
+        val_set=val_set,
+        test_set=test_set,        
         batch_size=cfg.mapper_batch_size,
         hidden=cfg.mapper_hidden,
         epochs=cfg.epochs,
         lr=cfg.lr,
         weight_decay=cfg.weight_decay,
-        val_ratio=cfg.val_ratio,
-        test_ratio=cfg.test_ratio,
         seed=cfg.random_seed,
         device=train_device,
     )
@@ -134,10 +144,14 @@ def main() -> None:
         out_dim=Y.shape[1],
     )
 
+    test_indices = np.asarray(test_set.indices, dtype=np.int64)
+    test_ids = aligned_ids[test_indices]
+    test_gloss_emb = torch.from_numpy(X[test_indices])
+
     result.model.eval()
     mapped = _map_in_batches(
         model=result.model,
-        X=X,
+        gloss_emb=test_gloss_emb,
         device=train_device,
         batch_size=cfg.mapping_inference_batch_size,
     )
@@ -152,7 +166,7 @@ def main() -> None:
     )
     save_topk_report(
         out_path=cfg.output_dir / "topk_neighbors.csv",
-        concept_ids=aligned_ids,
+        concept_ids=test_ids,
         top_idx=top_idx,
         top_scores=top_scores,
         idx_to_entity=idx_to_entity,
@@ -162,9 +176,10 @@ def main() -> None:
 
     print(f"Saved top-k report: {cfg.output_dir / 'topk_neighbors.csv'}")
 
+    
     if cfg.run_geodesic:
         run_geodesic_analysis(
-            concept_ids=aligned_ids,
+            concept_ids=test_ids,
             top1_indices=top_idx[:, 0],
             idx_to_entity=idx_to_entity,
             concept_id_to_label=id_to_label,
@@ -177,7 +192,7 @@ def main() -> None:
 
     np.savez_compressed(
         cfg.output_dir / "mapped_embeddings.npz",
-        concept_ids=aligned_ids,
+        concept_ids=test_ids,
         mapped_embeddings=mapped_norm.astype(np.float32),
     )
     print(f"Pipeline completed. Outputs in: {cfg.output_dir}")

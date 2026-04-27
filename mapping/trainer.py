@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+
 import torch
 from torch.utils.data import DataLoader, TensorDataset, random_split
 from tqdm.auto import tqdm
@@ -20,38 +22,19 @@ class TrainResult:
 
 
 def train_mapper(
-    X: np.ndarray,
-    Y: np.ndarray,
+    train_set: TensorDataset,
+    val_set: TensorDataset,
+    test_set: TensorDataset,
     batch_size: int,
     hidden: int,
     epochs: int,
     lr: float,
     weight_decay: float,
-    val_ratio: float,
-    test_ratio: float,
     seed: int,
     device: torch.device,
 ) -> TrainResult:
-    in_dim = X.shape[1]
-    out_dim = Y.shape[1]
-
-    X_t = torch.from_numpy(X).float()
-    Y_t = torch.from_numpy(Y).float()
-    dataset = TensorDataset(X_t, Y_t)
-
-    total = len(dataset)
-    test_size = int(total * test_ratio)
-    val_size = int(total * val_ratio)
-    train_size = total - val_size - test_size
-    if train_size <= 0:
-        raise ValueError("Split sizes leave no training examples")
-
-    generator = torch.Generator().manual_seed(seed)
-    train_set, val_set, test_set = random_split(
-        dataset,
-        [train_size, val_size, test_size],
-        generator=generator,
-    )
+    in_dim = train_set.tensors[0].shape[1]
+    out_dim = train_set.tensors[1].shape[1]
 
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False)
