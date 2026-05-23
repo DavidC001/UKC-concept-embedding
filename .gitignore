@@ -25,15 +25,12 @@ slurm-*.out
 sentence_embeddings_*.npz
 RotE_model_*.pt
 wandb/
-WSD/outputs/
-wsd_before_lora/outputs/
 ukc_embedding/data/
-ukc_embedding/logs/
 
 sbatch*
 
-geometry/figures/
 geometry/rote_2d_visualization/output/
 *.pt
 
-outputs/
+outputs*/
+logs/
