@@ -3,20 +3,20 @@
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
-
+from WSD.common import move_batch_to_device
 
 def _compute_loss(model, selected_scores, gold_targets, loss_type):
     if loss_type == "hierarchy_factorized":
-        gold_log_probs = model.gold_log_probs(selected_scores / model.temperature, gold_targets)
+        gold_log_probs = model.gold_log_probs(selected_scores * model.temperature.exp(), gold_targets)
         loss = -gold_log_probs.mean()
     elif loss_type == "hierarchy_weighted_agg":
-        aggregated_scores = model.weighted_aggregate_logits(selected_scores / model.temperature)
+        aggregated_scores = model.weighted_aggregate_logits(selected_scores * model.temperature.exp())
         loss = F.nll_loss(F.log_softmax(aggregated_scores, dim=1), gold_targets)
     elif loss_type == "cosine":
         gold_scores = selected_scores[torch.arange(gold_targets.shape[0], device=gold_targets.device), gold_targets]
         loss = 1.0 - gold_scores.mean()
     elif loss_type == "standard":
-        loss = F.cross_entropy(selected_scores / model.temperature, gold_targets)
+        loss = F.cross_entropy(selected_scores * model.temperature.exp(), gold_targets)
     else:
         raise ValueError("LOSS_TYPE must be one of: standard, cosine, hierarchy_factorized, hierarchy_weighted_agg")
     
@@ -27,9 +27,7 @@ def run_epoch(
     loader,
     optimizer,
     device,
-    concept_id_to_index,
     loss_type,
-    move_batch_to_device,
 ):
     model.train()
     total_loss = 0.0
@@ -67,8 +65,7 @@ def run_validation_loss(
     model,
     loader,
     device,
-    loss_type,
-    move_batch_to_device,
+    loss_type
 ):
     model.eval()
     total_loss = 0.0

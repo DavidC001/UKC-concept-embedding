@@ -70,9 +70,9 @@ class UnifiedConceptClassifier(nn.Module):
         else:
             self.concept_embeddings = nn.Parameter(concept_embeddings, requires_grad=not freeze_concept_embeddings)
 
-        # learnable temperature scaling for similarity-based scores
-        self.temperature = nn.Parameter(torch.tensor(float(temperature)), requires_grad=True)
-
+        # learnable temperature scaling for similarity-based scores use log for better gradient
+        self.temperature = nn.Parameter(torch.tensor(1/temperature).log(), requires_grad=True)
+    
         if parent_index is not None:
             parent_index = parent_index.long()
             if parent_index.shape[0] != concept_embeddings.shape[0]:

@@ -21,6 +21,11 @@ class WSDConfig:
     TEST_TSV: str = str(project_root / "dataset/test")
     """Path to the test data TSV file"""
 
+    NUM_RUNS: int = 1
+    """Number of runs to perform in order to get average and standard deviation of results."""
+
+    SEED: int = 42
+    """Base random seed for multi-run experiments. Each run uses SEED + run_index."""
 
     ROTE_MODEL: str = str(project_root / "dataset/RotE/model.pt")
     """Path to the pre-trained RotE model checkpoint."""
@@ -125,6 +130,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=defaults.MODE,
         help="Execution mode",
     )
+    
+    parser.add_argument("--num-runs", type=int, default=defaults.NUM_RUNS)
+    parser.add_argument("--seed", type=int, default=defaults.SEED)
 
     parser.add_argument("--training-mode", choices=["precomputed", "encoder"], default=defaults.TRAINING_MODE)
     parser.add_argument("--data-file", default=defaults.DATA_FILE)
@@ -176,6 +184,8 @@ def config_from_parsed_args(args: argparse.Namespace) -> WSDConfig:
     
     return replace(
         defaults,
+        NUM_RUNS=args.num_runs,
+        SEED=args.seed,
         TRAINING_MODE=args.training_mode,
         DATA_FILE=args.data_file,
         ENCODER_MODEL=args.encoder_model,

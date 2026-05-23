@@ -2,9 +2,11 @@
 
 import json
 import os
+import random
 import shutil
 from datetime import datetime
 
+import numpy as np
 import torch
 from tqdm import tqdm
 
@@ -26,11 +28,14 @@ from WSD.utils.build_precomputed_embeddings import validate_precomputed_alignmen
 from WSD.common import move_batch_to_device, remap_labels_to_index_space
 from WSD.concepts import create_bidirectional_mappings, load_rote_embeddings, load_uk_id_to_concept_id
 from WSD.evaluation import (
+    append_aggregate_report,
     append_evaluation_report,
     compile_scorer_if_needed,
     evaluate_with_candidates,
     evaluate_with_gold_standard,
+    log_aggregate_scores_to_wandb,
     log_scores_to_wandb,
+    print_aggregate_scores_table,
     print_scores_table,
     save_predictions,
 )
@@ -76,41 +81,15 @@ def _evaluate(
     return len(all_preds)
 
 
-def train(cfg : WSDConfig):
-    os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
+def _seed_everything(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    baseline_suffix = f"_baseline_{cfg.BASELINE_TYPE}" if getattr(cfg, "BASELINE", False) else ""
-    run_name = f"{timestamp}_{cfg.TRAINING_MODE}_{cfg.LOSS_TYPE}{baseline_suffix}"
-    run_dir = os.path.join(cfg.OUTPUT_DIR, run_name)
-    os.makedirs(run_dir, exist_ok=True)
-    report_file = os.path.join(run_dir, "evaluation_report.txt")
 
-    with open(report_file, "w", encoding="utf-8") as f:
-        f.write(f"Run: {run_name}\n")
-        f.write(f"Training mode: {cfg.TRAINING_MODE}\n")
-        f.write(f"Loss type: {cfg.LOSS_TYPE}\n")
-        f.write(f"Baseline: {getattr(cfg, 'BASELINE', False)}\n")
-        f.write(f"Baseline type: {getattr(cfg, 'BASELINE_TYPE', 'linear')}\n")
-        f.write("\n")
-
-    # save config for reproducibility
-    config_save_path = os.path.join(run_dir, "config.json")
-    with open(config_save_path, "w", encoding="utf-8") as f:
-        json.dump(cfg_asdict(cfg), f, indent=4)
-    print(f"Saved config: {config_save_path}")
-
-    wandb_run = None
-    if getattr(cfg, "USE_WANDB", False):
-        if not HAS_WANDB:
-            print("Warning: USE_WANDB=True but wandb is not installed. Install with: pip install wandb")
-        else:
-            wandb_run = wandb.init(
-                project=getattr(cfg, "WANDB_PROJECT", "wsd-unified"),
-                name=run_name,
-                config=dict(vars(cfg)),
-            )
-
+def _load_data(cfg):
     concept_id_to_index, index_to_concept_id = create_bidirectional_mappings(cfg.ENTITY_TO_ID)
     uk_id_to_concept_id = load_uk_id_to_concept_id(cfg.CONCEPTS_CSV)
     concept_embeddings = load_rote_embeddings(cfg.ROTE_MODEL)
@@ -185,26 +164,71 @@ def train(cfg : WSDConfig):
     else:
         raise ValueError("TRAINING_MODE must be one of: precomputed, encoder")
 
+    return loaders, concept_embeddings, hierarchy_data, concept_id_to_index, index_to_concept_id, uk_id_to_concept_id, input_dim, encoder_backbone
 
+
+
+def _train_single_run(cfg: WSDConfig, run_dir: str, run_name: str, run_seed: int):
+    _seed_everything(run_seed)
+    os.makedirs(run_dir, exist_ok=True)
+    report_file = os.path.join(run_dir, "evaluation_report.txt")
+
+    with open(report_file, "w", encoding="utf-8") as f:
+        f.write(f"Run: {run_name}\n")
+        f.write(f"Training mode: {cfg.TRAINING_MODE}\n")
+        f.write(f"Loss type: {cfg.LOSS_TYPE}\n")
+        f.write(f"Baseline: {getattr(cfg, 'BASELINE', False)}\n")
+        f.write(f"Baseline type: {getattr(cfg, 'BASELINE_TYPE', 'linear')}\n")
+        f.write(f"Seed: {run_seed}\n")
+        f.write("\n")
+
+    # save config for reproducibility
+    config_save_path = os.path.join(run_dir, "config.json")
+    config_payload = cfg_asdict(cfg)
+    config_payload["RUN_SEED"] = int(run_seed)
+    with open(config_save_path, "w", encoding="utf-8") as f:
+        json.dump(config_payload, f, indent=4)
+    print(f"Saved config: {config_save_path}")
+
+    wandb_run = None
+    if getattr(cfg, "USE_WANDB", False):
+        if not HAS_WANDB:
+            print("Warning: USE_WANDB=True but wandb is not installed. Install with: pip install wandb")
+        else:
+            wandb_config = dict(vars(cfg))
+            wandb_config["RUN_SEED"] = int(run_seed)
+            wandb_run = wandb.init(
+                project=getattr(cfg, "WANDB_PROJECT", "wsd-unified"),
+                name=run_name,
+                config=wandb_config,
+            )
+
+    loaders, concept_embeddings, hierarchy_data, concept_id_to_index, index_to_concept_id, uk_id_to_concept_id, input_dim, encoder_backbone = _load_data(cfg)
+    
     loss_type = str(getattr(cfg, "LOSS_TYPE", "standard"))
     weighted_hierarchy_alpha = float(getattr(cfg, "WEIGHTED_HIERARCHY_ALPHA", 0.5))
 
     model = UnifiedConceptClassifier(
         concept_embeddings=concept_embeddings,
-        input_dim=input_dim,
-        hidden_dim=cfg.HIDDEN_DIM,
-        output_dim=concept_embeddings.shape[1],
-        dropout=cfg.DROPOUT,
-        temperature=0.1,
         encoder_backbone=encoder_backbone,
+        
+        freeze_concept_embeddings=cfg.FREEZE_CONCEPT_EMBEDDINGS,
+        input_dim=input_dim,
+        output_dim=concept_embeddings.shape[1],
+        project_num_layers=cfg.PROJECT_NUM_LAYERS,
+        hidden_dim=cfg.HIDDEN_DIM,
+        similarity_metric=cfg.SIMILARITY_METRIC,
+        
+        temperature=0.1,
+        dropout=cfg.DROPOUT,
+        
+        # used for hierarchy-aware losses
         parent_index=hierarchy_data["parent_index"].to(cfg.DEVICE),
         hierarchy_data=hierarchy_data,
         weighted_hierarchy_alpha=weighted_hierarchy_alpha,
-        freeze_concept_embeddings=getattr(cfg, "FREEZE_CONCEPT_EMBEDDINGS", True),
-        baseline=getattr(cfg, "BASELINE", False),
-        baseline_type=getattr(cfg, "BASELINE_TYPE", "linear"),
-        similarity_metric=getattr(cfg, "SIMILARITY_METRIC", "cosine"),
-        project_num_layers=getattr(cfg, "PROJECT_NUM_LAYERS", 1),
+        
+        baseline=cfg.BASELINE,
+        baseline_type=cfg.BASELINE_TYPE,
     ).to(cfg.DEVICE)
 
     if encoder_backbone is not None:
@@ -222,6 +246,8 @@ def train(cfg : WSDConfig):
     best_epoch = 0
     epochs_without_improvement = 0
     best_state_dict = None
+    best_eval_scores = None
+    best_test_scores = None
 
     print("Training parameters:")
     for name, param in model.named_parameters():
@@ -240,8 +266,7 @@ def train(cfg : WSDConfig):
             optimizer=optimizer,
             device=cfg.DEVICE,
             concept_id_to_index=concept_id_to_index,
-            loss_type=loss_type,
-            move_batch_to_device=move_batch_to_device,
+            loss_type=loss_type
         )
         print(f"Epoch {epoch}: train_loss={train_loss:.4f}")
         if wandb_run is not None:
@@ -277,8 +302,7 @@ def train(cfg : WSDConfig):
             model=model,
             loader=loaders["eval"],
             device=cfg.DEVICE,
-            loss_type=loss_type,
-            move_batch_to_device=move_batch_to_device,
+            loss_type=loss_type
         )
 
         eval_scores = evaluate_with_gold_standard(
@@ -326,6 +350,8 @@ def train(cfg : WSDConfig):
             best_epoch = epoch
             epochs_without_improvement = 0
             best_state_dict = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            best_eval_scores = eval_scores
+            best_test_scores = test_scores
             best_model_path = os.path.join(run_dir, "best_model.pt")
             torch.save(best_state_dict, best_model_path)
             
@@ -361,6 +387,11 @@ def train(cfg : WSDConfig):
     if best_state_dict is not None:
         model.load_state_dict(best_state_dict)
 
+    if best_eval_scores is None:
+        best_eval_scores = eval_scores
+    if best_test_scores is None:
+        best_test_scores = test_scores
+
     model_path = os.path.join(run_dir, "model.pt")
     torch.save(model.state_dict(), model_path)
 
@@ -370,14 +401,72 @@ def train(cfg : WSDConfig):
     print(f"Saved evaluation report: {report_file}")
 
     if wandb_run is not None:
-        wandb.log(
-            {
-                "artifacts/model_path": model_path,
-                "artifacts/eval_predictions": eval_file,
-                "artifacts/test_predictions": test_file,
-                "artifacts/best_epoch": int(best_epoch),
-            }
-        )
         wandb.finish()
 
-    return run_dir
+    return {
+        "run_dir": run_dir,
+        "report_file": report_file,
+        "best_eval_scores": best_eval_scores,
+        "best_test_scores": best_test_scores,
+    }
+
+
+def train(cfg: WSDConfig):
+    os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    baseline_suffix = f"_baseline_{cfg.BASELINE_TYPE}" if getattr(cfg, "BASELINE", False) else ""
+    run_name = f"{timestamp}_{cfg.TRAINING_MODE}_{cfg.LOSS_TYPE}{baseline_suffix}"
+    parent_run_dir = os.path.join(cfg.OUTPUT_DIR, run_name)
+    os.makedirs(parent_run_dir, exist_ok=True)
+
+    num_runs = int(getattr(cfg, "NUM_RUNS", 1))
+    base_seed = int(getattr(cfg, "SEED", 42))
+    eval_scores_list = []
+    test_scores_list = []
+
+    if num_runs == 1:
+        run_info = _train_single_run(cfg, parent_run_dir, run_name, base_seed)
+        report_file = run_info["report_file"]
+        eval_scores_list.append(run_info["best_eval_scores"])
+        test_scores_list.append(run_info["best_test_scores"])
+    else:
+        report_file = os.path.join(parent_run_dir, "evaluation_report.txt")
+        with open(report_file, "w", encoding="utf-8") as f:
+            f.write(f"Run: {run_name}\n")
+            f.write(f"Training mode: {cfg.TRAINING_MODE}\n")
+            f.write(f"Loss type: {cfg.LOSS_TYPE}\n")
+            f.write(f"Baseline: {getattr(cfg, 'BASELINE', False)}\n")
+            f.write(f"Baseline type: {getattr(cfg, 'BASELINE_TYPE', 'linear')}\n")
+            f.write(f"Num runs: {num_runs}\n")
+            f.write(f"Base seed: {base_seed}\n")
+            f.write("\n")
+
+        for run_index in range(num_runs):
+            run_seed = base_seed + run_index
+            run_suffix = f"run_{run_index + 1:02d}"
+            run_dir = os.path.join(parent_run_dir, run_suffix)
+            run_display_name = f"{run_name}_{run_suffix}"
+            run_info = _train_single_run(cfg, run_dir, run_display_name, run_seed)
+            eval_scores_list.append(run_info["best_eval_scores"])
+            test_scores_list.append(run_info["best_test_scores"])
+
+    print_aggregate_scores_table("Aggregate Eval Set Coverage & Scores", eval_scores_list)
+    print_aggregate_scores_table("Aggregate Test Set Coverage & Scores", test_scores_list)
+    append_aggregate_report(report_file, "Aggregate Eval Set Coverage & Scores", eval_scores_list)
+    append_aggregate_report(report_file, "Aggregate Test Set Coverage & Scores", test_scores_list)
+
+    if getattr(cfg, "USE_WANDB", False):
+        if not HAS_WANDB:
+            print("Warning: USE_WANDB=True but wandb is not installed. Install with: pip install wandb")
+        else:
+            summary_run = wandb.init(
+                project=getattr(cfg, "WANDB_PROJECT", "wsd-unified"),
+                name=f"{run_name}_summary",
+                config=dict(vars(cfg)),
+            )
+            log_aggregate_scores_to_wandb("eval", eval_scores_list, wandb)
+            log_aggregate_scores_to_wandb("test", test_scores_list, wandb)
+            summary_run.finish()
+
+    return parent_run_dir
