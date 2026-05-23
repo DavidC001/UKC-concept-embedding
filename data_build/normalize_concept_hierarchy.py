@@ -185,12 +185,12 @@ def add_pos_roots(
     root_labels = {label for _, label, _ in POS_ROOT_SPECS}
 
     last_concept_id = last_used_concept_ids(concepts_df, glosses_df, relations_df, concept_pos_df)
-    next_concept_id = (last_concept_id + 1) if last_concept_id else 1
+    next_concept_id = last_concept_id + 1
     next_relation_id = int(relations_df["id"].astype(int).max()) + 1
 
     # Keep optional provenance/kb convention aligned with the existing file.
-    default_kb_id = int(relations_df["kb_id"].dropna().astype(int).mode().iloc[0])
-    default_provenance_id = int(relations_df["provenance_id"].dropna().astype(int).mode().iloc[0])
+    default_kb_id = 1
+    default_provenance_id = 1
 
     added_edges = []
     added_concepts = []
@@ -296,6 +296,16 @@ def parse_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
+def clean_pos_mapping(concept_pos_df: pd.DataFrame) -> pd.DataFrame:
+    """Clean the concept_pos mapping by keeping only the most frequent POS for each concept."""
+    concept_pos_df["concept_id"] = concept_pos_df["concept_id"].astype(int)
+    concept_pos_df["pos"] = concept_pos_df["pos"].astype(int)
+    cleaned_rows = []
+    for concept_id, group in concept_pos_df.groupby("concept_id"):
+        most_freq_pos = group["pos"].mode()
+        if not most_freq_pos.empty:
+            cleaned_rows.append({"concept_id": concept_id, "pos": most_freq_pos.iloc[0]})
+    return pd.DataFrame(cleaned_rows)
 
 def main() -> None:
     args = parse_args()
@@ -309,6 +319,8 @@ def main() -> None:
     glosses_df = pd.read_csv(glosses_path)
     relations_df = pd.read_csv(relations_path)
     concept_pos_df = pd.read_csv(pos_path)
+    
+    concept_pos_df = clean_pos_mapping(concept_pos_df)
 
     required_rel_cols = {
         "id",
