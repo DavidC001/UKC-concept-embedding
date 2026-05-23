@@ -5,7 +5,6 @@ from pathlib import Path
 
 import WSD.config as config
 from WSD.training import train
-from wsd_before_lora.config import HIDDEN_DIM
 
 project_root = Path(__file__).resolve().parent.parent
 
@@ -22,11 +21,11 @@ HYPERPARAMETERS = {
     "LORA_R": [8],
     "LORA_ALPHA": [16],
     
-    "FREEZE_CONCEPT_EMBEDDINGS": [True, False],
+    "ENCODER_MODEL": ["xlm-roberta-large"],
+    "FREEZE_CONCEPT_EMBEDDINGS": [True],
     "TRAINING_MODE": ["precomputed", "encoder"],
     
     "PROJECT_NUM_LAYERS": [1],
-    # "HIDDEN_DIM": [4096],
     "WEIGHT_DECAY": [1e-4],
     "LEARNING_RATE": [1e-4],
     "BATCH_SIZE": [16],

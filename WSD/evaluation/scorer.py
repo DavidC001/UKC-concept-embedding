@@ -2,7 +2,26 @@
 
 import os
 import re
+import statistics
 import subprocess
+
+SUBSETS = [
+    "ALL",
+    "S2",
+    "S3",
+    "S13",
+    "S15",
+    "NOUN",
+    "VERB",
+    "ADJ",
+    "ADV",
+    "Seen Only",
+    "Unseen Only",
+    "Single Candidate Only",
+    "Multiple Candidates Only",
+    "Multiple Candidates Seen Only",
+    "Multiple Candidates Unseen Only",
+]
 
 
 def load_id_to_pos(tsv_file):
@@ -183,28 +202,10 @@ def evaluate_with_gold_standard(
 
 
 def print_scores_table(title, scores):
-    subsets = [
-        "ALL",
-        "S2",
-        "S3",
-        "S13",
-        "S15",
-        "NOUN",
-        "VERB",
-        "ADJ",
-        "ADV",
-        "Seen Only",
-        "Unseen Only",
-        "Single Candidate Only",
-        "Multiple Candidates Only",
-        "Multiple Candidates Seen Only",
-        "Multiple Candidates Unseen Only",
-    ]
-
     print(f"\n{title}")
     print(f"{'Subset':35} {'Gold':>8} {'Evaluated':>10} {'Coverage%':>10} {'P':>8} {'R':>8} {'F1':>8}")
     print("-" * 95)
-    for subset in subsets:
+    for subset in SUBSETS:
         m = scores.get(subset, {})
         print(
             f"{subset:35} "
@@ -218,31 +219,13 @@ def print_scores_table(title, scores):
 
 
 def _scores_table_lines(title, scores):
-    subsets = [
-        "ALL",
-        "S2",
-        "S3",
-        "S13",
-        "S15",
-        "NOUN",
-        "VERB",
-        "ADJ",
-        "ADV",
-        "Seen Only",
-        "Unseen Only",
-        "Single Candidate Only",
-        "Multiple Candidates Only",
-        "Multiple Candidates Seen Only",
-        "Multiple Candidates Unseen Only",
-    ]
-
     lines = [
         title,
         f"{'Subset':35} {'Gold':>8} {'Evaluated':>10} {'Coverage%':>10} {'P':>8} {'R':>8} {'F1':>8}",
         "-" * 95,
     ]
 
-    for subset in subsets:
+    for subset in SUBSETS:
         m = scores.get(subset, {})
         lines.append(
             f"{subset:35} "
@@ -255,6 +238,123 @@ def _scores_table_lines(title, scores):
         )
 
     return lines
+
+
+def _mean_std(values):
+    if not values:
+        return 0.0, 0.0
+    mean = statistics.mean(values)
+    std = statistics.stdev(values) if len(values) > 1 else 0.0
+    return mean, std
+
+
+def aggregate_scores(scores_list):
+    if not scores_list:
+        return {}
+
+    aggregated = {}
+    for subset in SUBSETS:
+        gold_total = int(scores_list[0].get(subset, {}).get("gold_total", 0))
+        effective_values = []
+        coverage_values = []
+        precision_values = []
+        recall_values = []
+        f1_values = []
+
+        for scores in scores_list:
+            metrics = scores.get(subset, {})
+            effective_values.append(float(metrics.get("effective_size", 0.0)))
+            coverage_values.append(float(metrics.get("coverage_gold_pct", 0.0)))
+            precision_values.append(float(metrics.get("precision", 0.0)))
+            recall_values.append(float(metrics.get("recall", 0.0)))
+            f1_values.append(float(metrics.get("f1", 0.0)))
+
+        effective_mean, effective_std = _mean_std(effective_values)
+        coverage_mean, coverage_std = _mean_std(coverage_values)
+        precision_mean, precision_std = _mean_std(precision_values)
+        recall_mean, recall_std = _mean_std(recall_values)
+        f1_mean, f1_std = _mean_std(f1_values)
+
+        aggregated[subset] = {
+            "gold_total": gold_total,
+            "effective_size_mean": effective_mean,
+            "effective_size_std": effective_std,
+            "coverage_gold_pct_mean": coverage_mean,
+            "coverage_gold_pct_std": coverage_std,
+            "precision_mean": precision_mean,
+            "precision_std": precision_std,
+            "recall_mean": recall_mean,
+            "recall_std": recall_std,
+            "f1_mean": f1_mean,
+            "f1_std": f1_std,
+        }
+
+    return aggregated
+
+
+def _format_mean_std(mean, std, decimals=1):
+    return f"{mean:.{decimals}f} +/- {std:.{decimals}f}"
+
+
+def print_aggregate_scores_table(title, scores_list):
+    aggregated = aggregate_scores(scores_list)
+    print(f"\n{title}")
+    if not aggregated:
+        print("No scores available.")
+        return
+
+    print(
+        f"{'Subset':35} {'Gold':>8} {'Evaluated':>18} {'Coverage%':>18} "
+        f"{'P':>18} {'R':>18} {'F1':>18}"
+    )
+    print("-" * 135)
+
+    for subset in SUBSETS:
+        m = aggregated.get(subset, {})
+        print(
+            f"{subset:35} "
+            f"{int(m.get('gold_total', 0)):>8} "
+            f"{_format_mean_std(m.get('effective_size_mean', 0.0), m.get('effective_size_std', 0.0)):>18} "
+            f"{_format_mean_std(m.get('coverage_gold_pct_mean', 0.0), m.get('coverage_gold_pct_std', 0.0)):>18} "
+            f"{_format_mean_std(m.get('precision_mean', 0.0), m.get('precision_std', 0.0)):>18} "
+            f"{_format_mean_std(m.get('recall_mean', 0.0), m.get('recall_std', 0.0)):>18} "
+            f"{_format_mean_std(m.get('f1_mean', 0.0), m.get('f1_std', 0.0)):>18}"
+        )
+
+
+def _aggregate_scores_table_lines(title, scores_list):
+    aggregated = aggregate_scores(scores_list)
+    lines = [title]
+    if not aggregated:
+        lines.append("No scores available.")
+        return lines
+
+    lines.append(
+        f"{'Subset':35} {'Gold':>8} {'Evaluated':>18} {'Coverage%':>18} "
+        f"{'P':>18} {'R':>18} {'F1':>18}"
+    )
+    lines.append("-" * 135)
+
+    for subset in SUBSETS:
+        m = aggregated.get(subset, {})
+        lines.append(
+            f"{subset:35} "
+            f"{int(m.get('gold_total', 0)):>8} "
+            f"{_format_mean_std(m.get('effective_size_mean', 0.0), m.get('effective_size_std', 0.0)):>18} "
+            f"{_format_mean_std(m.get('coverage_gold_pct_mean', 0.0), m.get('coverage_gold_pct_std', 0.0)):>18} "
+            f"{_format_mean_std(m.get('precision_mean', 0.0), m.get('precision_std', 0.0)):>18} "
+            f"{_format_mean_std(m.get('recall_mean', 0.0), m.get('recall_std', 0.0)):>18} "
+            f"{_format_mean_std(m.get('f1_mean', 0.0), m.get('f1_std', 0.0)):>18}"
+        )
+
+    return lines
+
+
+def append_aggregate_report(report_file, title, scores_list):
+    with open(report_file, "a", encoding="utf-8") as f:
+        for line in _aggregate_scores_table_lines(title, scores_list):
+            f.write(line + "\n")
+        f.write("\n\n")
 
 
 def append_evaluation_report(report_file, epoch, eval_scores, test_scores):
@@ -293,5 +393,25 @@ def log_scores_to_wandb(prefix, scores, wandb_module):
                 f"{prefix}/recall/{category}": float(metrics.get("recall", 0.0)),
                 f"{prefix}/f1/{category}": float(metrics.get("f1", 0.0)),
                 f"{prefix}/coverage_gold_pct/{category}": float(metrics.get("coverage_gold_pct", 0.0)),
+            }
+        )
+
+
+def log_aggregate_scores_to_wandb(prefix, scores_list, wandb_module):
+    aggregated = aggregate_scores(scores_list)
+    if not aggregated:
+        return
+
+    for category, metrics in aggregated.items():
+        wandb_module.log(
+            {
+                f"{prefix}/mean/precision/{category}": float(metrics.get("precision_mean", 0.0)),
+                f"{prefix}/std/precision/{category}": float(metrics.get("precision_std", 0.0)),
+                f"{prefix}/mean/recall/{category}": float(metrics.get("recall_mean", 0.0)),
+                f"{prefix}/std/recall/{category}": float(metrics.get("recall_std", 0.0)),
+                f"{prefix}/mean/f1/{category}": float(metrics.get("f1_mean", 0.0)),
+                f"{prefix}/std/f1/{category}": float(metrics.get("f1_std", 0.0)),
+                f"{prefix}/mean/coverage_gold_pct/{category}": float(metrics.get("coverage_gold_pct_mean", 0.0)),
+                f"{prefix}/std/coverage_gold_pct/{category}": float(metrics.get("coverage_gold_pct_std", 0.0)),
             }
         )
