@@ -36,7 +36,7 @@ def plot_heatmaps(
             ax.set_title(title + " (empty)")
             ax.axis("off")
             continue
-        im = ax.imshow(mat, aspect="auto", cmap="icefire", vmin=-1.0, vmax=1.0)
+        im = ax.imshow(mat, aspect="auto", cmap="seismic", vmin=-1.0, vmax=1.0)
         ax.set_title(title)
         ax.set_xticks([])
         ax.set_yticks([])
@@ -111,12 +111,12 @@ def plot_projection_feature_figure(out_path: Path, proj_stats: Dict[str, dict]) 
 
         ax.set_ylim(-1.0, 2.0)
         ax.set_title(title)
-        ax.set_xlabel("Binary Features in Hierarchy")
+        ax.set_xlabel("UKC concept index")
 
     fig, axs = plt.subplots(1, 2, figsize=(14, 4.8))
     draw_panel(axs[0], proj_stats["original"], "Original Unembeddings")
     draw_panel(axs[1], proj_stats["shuffled"], "Shuffled Unembeddings")
-    axs[0].set_ylabel(r"$(g(y)^\top \bar{\ell}_w) / \|\bar{\ell}_w\|^2$")
+    axs[0].set_ylabel(r"Normalized projection $(g(y)^\top \bar{\ell}_w) / \|\bar{\ell}_w\|_2^2$")
 
     handles, labels = axs[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, -0.03), ncol=3)

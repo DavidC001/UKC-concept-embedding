@@ -86,9 +86,8 @@ def shortest_path_matrix(g: nx.DiGraph, nodes: List[int]) -> np.ndarray:
     dist = np.asarray(dist, dtype=np.float32)
 
     prox = np.zeros_like(dist, dtype=np.float32)
-    mask = dist > 0
-    prox[mask] = 1.0 / dist[mask] - 1.0
-    np.fill_diagonal(prox, 1.0)
+    prox = 1.0 / (1 + dist)
+    # np.fill_diagonal(prox, 1.0)
     return prox
 
 

@@ -177,12 +177,12 @@ def main(args: argparse.Namespace) -> None:
         )
 
     idx_sets = {
-        "animal": descendant_indices(animal_root, hgraph, ent2idx),
-        "plant": descendant_indices(plant_root, hgraph, ent2idx),
-        "mammal": descendant_indices(mammals_id, hgraph, ent2idx),
-        "bird": descendant_indices(birds_id, hgraph, ent2idx),
-        "fish": descendant_indices(fish_id, hgraph, ent2idx),
-        "reptile": descendant_indices(reptile_id, hgraph, ent2idx),
+        "animal": descendant_indices(animal_root, hgraph, ent2idx, max_depth=5),
+        "plant": descendant_indices(plant_root, hgraph, ent2idx, max_depth=5),
+        "mammal": descendant_indices(mammals_id, hgraph, ent2idx, max_depth=5),
+        "bird": descendant_indices(birds_id, hgraph, ent2idx, max_depth=5),
+        "fish": descendant_indices(fish_id, hgraph, ent2idx, max_depth=5),
+        "reptile": descendant_indices(reptile_id, hgraph, ent2idx, max_depth=5),
     }
 
     run_visual_2d(
@@ -257,11 +257,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plant_root_id", type=int, default=38)
     
     parser.add_argument("--min_category_size", type=int, default=25)
-    parser.add_argument("--feature_train_ratio", type=float, default=0.8)
+    parser.add_argument("--feature_train_ratio", type=float, default=0.7)
     parser.add_argument("--feature_random_sample_size", type=int, default=20000)
     
     parser.add_argument("--seed", type=int, default=100)
-    parser.add_argument("--output_dir", type=str, default="geometry/figures")
+    parser.add_argument("--output_dir", type=str, default="geometry/outputs")
     return parser
 
 
