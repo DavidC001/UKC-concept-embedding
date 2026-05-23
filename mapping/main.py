@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
 import random
 from pathlib import Path
 import sys
@@ -13,7 +14,7 @@ if __package__ in (None, ""):
 
 from mapping.config import parse_args
 from mapping.evaluation import run_geodesic_analysis, save_topk_report, topk_neighbors
-from mapping.model.gloss_encoder import choose_device, encode_glosses
+from mapping.model.gloss_encoder import encode_glosses
 from mapping.trainer import save_checkpoint, train_mapper
 from mapping.utils.gloss_io import l2_normalize, load_concept_glosses, load_concepts, save_embeddings_npz
 from mapping.utils.load_embeddings import (
@@ -32,15 +33,6 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
-
-
-def _to_device(device_str: str) -> torch.device:
-    if device_str == "mps" and not torch.backends.mps.is_available():
-        return torch.device("cpu")
-    if device_str == "cuda" and not torch.cuda.is_available():
-        return torch.device("cpu")
-    return torch.device(device_str)
-
 
 def _map_in_batches(
     model: torch.nn.Module,
@@ -65,27 +57,28 @@ def main() -> None:
     cfg = parse_args()
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
     set_seed(cfg.random_seed)
-
-    encoder_device = choose_device(cfg.device)
-    train_device = _to_device(encoder_device)
-    print(f"Encoder device: {encoder_device}")
-    print(f"Training device: {train_device}")
-
-    gloss_df = load_concept_glosses(cfg.concept_glosses_csv)
+        
+    gloss_df = load_concept_glosses(cfg.concept_glosses_csv, cfg.concept_relations_csv)
     concept_ids = gloss_df["concept_id"].to_numpy(dtype=str)
-    glosses = gloss_df["gloss"].tolist()
+    
+    if os.path.exists(cfg.output_dir / f"{cfg.model_name}_raw.npz") and os.path.exists(cfg.output_dir / f"{cfg.model_name}_norm.npz"):
+        print("Found existing embeddings, skipping encoding")
+        raw_emb = np.load(cfg.output_dir / f"{cfg.model_name}_raw.npz")["embeddings"]
+        norm_emb = np.load(cfg.output_dir / f"{cfg.model_name}_norm.npz")["embeddings"]
+    else:
+        glosses = gloss_df["gloss"].tolist()
 
-    print(f"Loaded gloss rows: {len(gloss_df)}")
-    raw_emb = encode_glosses(
-        glosses=glosses,
-        model_name=cfg.model_name,
-        batch_size=cfg.embedding_batch_size,
-        device=encoder_device,
-    )
-    norm_emb = l2_normalize(raw_emb)
+        print(f"Loaded gloss rows: {len(gloss_df)}")
+        raw_emb = encode_glosses(
+            glosses=glosses,
+            model_name=cfg.model_name,
+            batch_size=cfg.embedding_batch_size,
+            device=cfg.device,
+        )
+        norm_emb = l2_normalize(raw_emb)
 
-    save_embeddings_npz(cfg.output_dir / "qwen_concept_embeddings_raw.npz", concept_ids, raw_emb)
-    save_embeddings_npz(cfg.output_dir / "qwen_concept_embeddings.npz", concept_ids, norm_emb)
+        save_embeddings_npz(cfg.output_dir / f"{cfg.model_name}_raw.npz", concept_ids, raw_emb)
+        save_embeddings_npz(cfg.output_dir / f"{cfg.model_name}_norm.npz", concept_ids, norm_emb)
 
     rote_emb = load_rote_embeddings(cfg.rote_checkpoint)
     rote_norm = l2_normalize(rote_emb)
@@ -112,24 +105,21 @@ def main() -> None:
     # split into train/val/test sets
     dataset = TensorDataset(torch.from_numpy(X), torch.from_numpy(Y))
     generator = torch.Generator().manual_seed(cfg.random_seed)
-    train_split = 1.0 - cfg.val_ratio - cfg.test_ratio
-    train_set, val_set, test_set = random_split(
+    train_split = 1.0  - cfg.test_ratio
+    train_set, _, test_set = random_split(
         dataset,
-        [train_split, cfg.val_ratio, cfg.test_ratio],
+        [train_split, 0.0, cfg.test_ratio],
         generator=generator,
     )
 
     result = train_mapper(
         train_set=train_set,
-        val_set=val_set,
         test_set=test_set,        
         batch_size=cfg.mapper_batch_size,
-        hidden=cfg.mapper_hidden,
         epochs=cfg.epochs,
         lr=cfg.lr,
         weight_decay=cfg.weight_decay,
-        seed=cfg.random_seed,
-        device=train_device,
+        device=cfg.device,
     )
 
     print(f"Test cosine: {result.test_cosine:.6f}")
@@ -139,7 +129,6 @@ def main() -> None:
         out_path=cfg.output_dir / "linear_mapper_qwen_to_rote.pt",
         model=result.model,
         train_loss=result.train_loss,
-        val_loss=result.val_loss,
         in_dim=X.shape[1],
         out_dim=Y.shape[1],
     )
@@ -152,8 +141,8 @@ def main() -> None:
     mapped = _map_in_batches(
         model=result.model,
         gloss_emb=test_gloss_emb,
-        device=train_device,
-        batch_size=cfg.mapping_inference_batch_size,
+        device=cfg.device,
+        batch_size=cfg.mapper_batch_size,
     )
     mapped_norm = l2_normalize(mapped)
 
@@ -161,8 +150,6 @@ def main() -> None:
         mapped_norm=mapped_norm,
         rote_norm=rote_norm,
         top_k=cfg.top_k,
-        query_chunk_size=cfg.nn_query_chunk_size,
-        corpus_chunk_size=cfg.nn_corpus_chunk_size,
     )
     save_topk_report(
         out_path=cfg.output_dir / "topk_neighbors.csv",
@@ -186,7 +173,6 @@ def main() -> None:
             entity_id_to_label=entity_id_to_label,
             concept_relations_csv=cfg.concept_relations_csv,
             output_dir=cfg.output_dir,
-            sample_size=cfg.geodesic_sample_size,
             seed=cfg.random_seed,
         )
 

@@ -9,42 +9,38 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset, random_split
 from tqdm.auto import tqdm
 
-from mapping.model.mapping_model import LinearMapper, cosine_loss
+from mapping.model.mapping_model import LinearMapper, contrastive_loss
 
 
 @dataclass
 class TrainResult:
     model: LinearMapper
     train_loss: list[float]
-    val_loss: list[float]
     test_cosine: float
     test_mse: float
 
 
 def train_mapper(
     train_set: TensorDataset,
-    val_set: TensorDataset,
     test_set: TensorDataset,
     batch_size: int,
-    hidden: int,
     epochs: int,
     lr: float,
     weight_decay: float,
-    seed: int,
     device: torch.device,
 ) -> TrainResult:
-    in_dim = train_set.tensors[0].shape[1]
-    out_dim = train_set.tensors[1].shape[1]
+    # Handle both TensorDataset and Subset cases
+    dataset = train_set.dataset
+    in_dim = dataset.tensors[0].shape[1]
+    out_dim = dataset.tensors[1].shape[1]
 
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False)
 
-    model = LinearMapper(in_dim=in_dim, out_dim=out_dim, hidden=hidden).to(device)
+    model = LinearMapper(in_dim=in_dim, out_dim=out_dim).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
 
     train_loss_hist: list[float] = []
-    val_loss_hist: list[float] = []
 
     for _ in tqdm(range(epochs), desc="Training mapper"):
         model.train()
@@ -54,27 +50,12 @@ def train_mapper(
             yb = yb.to(device)
             optimizer.zero_grad()
             out = model(xb)
-            loss = cosine_loss(out, yb)
+            loss = contrastive_loss(out, yb)
             loss.backward()
             optimizer.step()
             running += loss.item() * xb.size(0)
         train_epoch = running / len(train_set)
         train_loss_hist.append(train_epoch)
-
-        if len(val_set) > 0:
-            model.eval()
-            v_running = 0.0
-            with torch.no_grad():
-                for xb, yb in val_loader:
-                    xb = xb.to(device)
-                    yb = yb.to(device)
-                    out = model(xb)
-                    loss = cosine_loss(out, yb)
-                    v_running += loss.item() * xb.size(0)
-            val_epoch = v_running / len(val_set)
-        else:
-            val_epoch = float("nan")
-        val_loss_hist.append(val_epoch)
 
     model.eval()
     if len(test_set) > 0:
@@ -106,7 +87,6 @@ def train_mapper(
     return TrainResult(
         model=model,
         train_loss=train_loss_hist,
-        val_loss=val_loss_hist,
         test_cosine=test_cos,
         test_mse=test_mse,
     )
@@ -116,7 +96,6 @@ def save_checkpoint(
     out_path: Path,
     model: LinearMapper,
     train_loss: list[float],
-    val_loss: list[float],
     in_dim: int,
     out_dim: int,
 ) -> None:
@@ -127,7 +106,6 @@ def save_checkpoint(
             "in_dim": in_dim,
             "out_dim": out_dim,
             "train_loss": train_loss,
-            "val_loss": val_loss,
         },
         out_path,
     )

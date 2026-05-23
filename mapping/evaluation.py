@@ -6,57 +6,35 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+import networkx as nx
+
 
 def topk_neighbors(
     mapped_norm: np.ndarray,
     rote_norm: np.ndarray,
     top_k: int,
-    query_chunk_size: int = 512,
-    corpus_chunk_size: int = 4096,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute top-k nearest neighbors based on cosine similarity, processing in chunks for memory efficiency."""
     if top_k <= 0:
         raise ValueError("top_k must be > 0")
-    if query_chunk_size <= 0 or corpus_chunk_size <= 0:
-        raise ValueError("chunk sizes must be > 0")
-    if rote_norm.shape[0] == 0:
-        raise ValueError("rote_norm is empty")
-
+    
     k = min(top_k, rote_norm.shape[0])
-    n_queries = mapped_norm.shape[0]
-
-    out_idx = np.full((n_queries, k), -1, dtype=np.int64)
-    out_scores = np.full((n_queries, k), -np.inf, dtype=np.float32)
-
-    for q_start in range(0, n_queries, query_chunk_size):
-        q_end = min(q_start + query_chunk_size, n_queries)
-        q_block = mapped_norm[q_start:q_end]
-
-        best_scores = np.full((q_block.shape[0], k), -np.inf, dtype=np.float32)
-        best_idx = np.full((q_block.shape[0], k), -1, dtype=np.int64)
-
-        for c_start in range(0, rote_norm.shape[0], corpus_chunk_size):
-            c_end = min(c_start + corpus_chunk_size, rote_norm.shape[0])
-            c_block = rote_norm[c_start:c_end]
-
-            sim_block = q_block @ c_block.T
-            local_k = min(k, sim_block.shape[1])
-
-            local_pos = np.argpartition(-sim_block, kth=local_k - 1, axis=1)[:, :local_k]
-            local_scores = np.take_along_axis(sim_block, local_pos, axis=1)
-            local_idx = local_pos.astype(np.int64, copy=False) + c_start
-
-            merged_scores = np.concatenate([best_scores, local_scores], axis=1)
-            merged_idx = np.concatenate([best_idx, local_idx], axis=1)
-
-            keep_pos = np.argpartition(-merged_scores, kth=k - 1, axis=1)[:, :k]
-            best_scores = np.take_along_axis(merged_scores, keep_pos, axis=1)
-            best_idx = np.take_along_axis(merged_idx, keep_pos, axis=1)
-
-        order = np.argsort(-best_scores, axis=1)
-        out_scores[q_start:q_end] = np.take_along_axis(best_scores, order, axis=1)
-        out_idx[q_start:q_end] = np.take_along_axis(best_idx, order, axis=1)
-
+    
+    sim_matrix = mapped_norm @ rote_norm.T
+    
+    out_idx = np.zeros((mapped_norm.shape[0], k), dtype=np.int32)
+    out_scores = np.zeros((mapped_norm.shape[0], k), dtype=np.float32)
+    
+    for start in range(0, sim_matrix.shape[0], 1000):
+        end = min(start + 1000, sim_matrix.shape[0])
+        batch_sim = sim_matrix[start:end]
+        batch_idx = np.argpartition(batch_sim, -k, axis=1)[:, -k:]
+        batch_scores = np.take_along_axis(batch_sim, batch_idx, axis=1)
+        
+        sorted_idx = np.argsort(-batch_scores, axis=1)
+        out_idx[start:end] = np.take_along_axis(batch_idx, sorted_idx, axis=1)
+        out_scores[start:end] = np.take_along_axis(batch_scores, sorted_idx, axis=1)
+    
     return out_idx, out_scores
 
 
@@ -118,39 +96,33 @@ def run_geodesic_analysis(
     entity_id_to_label: dict[str, str] | None,
     concept_relations_csv: Path,
     output_dir: Path,
-    sample_size: int,
     seed: int,
 ) -> None:
-    try:
-        import networkx as nx
-    except ImportError:
-        print("Skipping geodesic analysis: networkx is not installed")
-        return
 
     if not concept_relations_csv.exists():
         print(f"Skipping geodesic analysis: relation file not found at {concept_relations_csv}")
         return
 
     rels = pd.read_csv(concept_relations_csv)
-    lower_cols = [c.lower() for c in rels.columns]
-    if "src_con_id" in lower_cols and "trg_con_id" in lower_cols:
-        src_col = rels.columns[lower_cols.index("src_con_id")]
-        trg_col = rels.columns[lower_cols.index("trg_con_id")]
-    else:
-        src_col = rels.columns[0]
-        trg_col = rels.columns[1]
-
+    
+    # filter only relation_type 20
+    rels = rels[rels["relation_type"] == 20]
+    
+    # remove syntetic roots 114316 114317 and 114318 as they create shortcuts in the graph 
+    # that distort geodesic distance analysis
+    # rels = rels[~rels["src_con_id"].isin([114316, 114317, 114318])]
+    # rels = rels[~rels["trg_con_id"].isin([114316, 114317, 114318])]
+    
+    src_col = rels["src_con_id"]
+    trg_col = rels["trg_con_id"]
     graph = nx.Graph()
-    graph.add_edges_from(zip(rels[src_col].astype(str), rels[trg_col].astype(str)))
+    graph.add_edges_from(zip(src_col.astype(str), trg_col.astype(str)))
 
     np.random.seed(seed)
     n = len(concept_ids)
     if n == 0:
         print("Skipping geodesic analysis: no aligned concept ids")
         return
-
-    sample_n = min(sample_size, n)
-    sample_idx = np.random.choice(n, sample_n, replace=False)
 
     distances: list[int] = []
     random_distances: list[int] = []
@@ -161,7 +133,7 @@ def run_geodesic_analysis(
     distance_rows: list[dict[str, object]] = []
     random_rows: list[dict[str, object]] = []
 
-    for i in sample_idx:
+    for i in range(n):
         src = str(concept_ids[i])
         src_label = _resolve_label(src, concept_id_to_label)
         pred_idx = int(top1_indices[i])
@@ -173,18 +145,19 @@ def run_geodesic_analysis(
             continue
         try:
             d = nx.shortest_path_length(graph, source=src, target=tgt)
-            distances.append(int(d))
-            distance_rows.append(
-                {
-                    "concept_id": src,
-                    "concept_label": src_label,
-                    "mapped_entity": tgt,
-                    "mapped_entity_label": tgt_label,
-                    "geodesic_distance": int(d),
-                }
-            )
         except nx.NetworkXNoPath:
-            continue
+            d = -2
+        
+        distances.append(int(d))
+        distance_rows.append(
+            {
+                "concept_id": src,
+                "concept_label": src_label,
+                "mapped_entity": tgt,
+                "mapped_entity_label": tgt_label,
+                "geodesic_distance": int(d),
+            }
+        )
 
         if entity_values.size > 0:
             rand_tgt = str(entity_values[np.random.randint(0, entity_values.size)])
@@ -203,7 +176,8 @@ def run_geodesic_analysis(
                         }
                     )
                 except nx.NetworkXNoPath:
-                    pass
+                    rd = -2
+                    random_distances.append(int(rd))
 
     output_dir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(distance_rows if distance_rows else {"geodesic_distance": distances}).to_csv(
@@ -222,7 +196,7 @@ def run_geodesic_analysis(
     try:
         import matplotlib.pyplot as plt
 
-        bins = list(range(0, max(distances) + 2))
+        bins = list(range(-2, max(distances) + 2))
         plt.figure(figsize=(7, 4))
         plt.hist(distances, bins=bins, color="#2f7f7f", edgecolor="black")
         plt.title("Geodesic distance between concept and top-1 mapped entity")
@@ -233,7 +207,7 @@ def run_geodesic_analysis(
         plt.close()
 
         if random_distances:
-            bins_random = list(range(0, max(random_distances) + 2))
+            bins_random = list(range(-2, max(random_distances) + 2))
             plt.figure(figsize=(7, 4))
             plt.hist(random_distances, bins=bins_random, color="#ad6a3d", edgecolor="black")
             plt.title("Geodesic distance for random baseline entity")
@@ -244,7 +218,7 @@ def run_geodesic_analysis(
             plt.close()
 
             bins_max = max(max(distances), max(random_distances))
-            bins_cmp = list(range(0, bins_max + 2))
+            bins_cmp = list(range(-2, bins_max + 2))
             plt.figure(figsize=(8, 4.5))
             plt.hist(distances, bins=bins_cmp, alpha=0.55, color="#2f7f7f", edgecolor="black", label="Mapped top-1")
             plt.hist(random_distances, bins=bins_cmp, alpha=0.55, color="#ad6a3d", edgecolor="black", label="Random baseline")

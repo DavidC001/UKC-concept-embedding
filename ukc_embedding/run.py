@@ -25,19 +25,19 @@ parser.add_argument("--dataset", default="UKC", help="Knowledge Graph dataset")
 parser.add_argument("--model", default="RotE", choices=all_models, help="Knowledge Graph embedding model")
 parser.add_argument("--regularizer", choices=["N3", "F2"], default="N3", help="Regularizer")
 parser.add_argument("--reg", default=0, type=float, help="Regularization weight")
-parser.add_argument("--optimizer", choices=["Adagrad", "Adam", "SparseAdam"], default="Adagrad", help="Optimizer")
+parser.add_argument("--optimizer", choices=["Adagrad", "Adam", "SparseAdam", "AdamW"], default="AdamW", help="Optimizer")
 parser.add_argument("--max_epochs", default=50, type=int, help="Maximum number of epochs to train for")
-parser.add_argument("--patience", default=5, type=int, help="Number of validation checks (at validation frequency) with no improvement in validation loss before early stopping")
+parser.add_argument("--patience", default=2, type=int, help="Number of validation checks (at validation frequency) with no improvement in validation loss before early stopping")
 parser.add_argument("--lr_reduce_factor", default=0.5, type=float, help="Factor to multiply learning rate by when validation loss doesn't improve (set to 1.0 to disable)")
 parser.add_argument("--valid", default=3, type=float, help="Number of epochs before validation")
-parser.add_argument("--rank", default=1000, type=int, help="Embedding dimension")
-parser.add_argument("--batch_size", default=1000, type=int, help="Batch size")
-parser.add_argument("--neg_sample_size", default=50, type=int, help="Negative sample size, -1 to not use negative sampling")
+parser.add_argument("--rank", default=500, type=int, help="Embedding dimension")
+parser.add_argument("--batch_size", default=128, type=int, help="Batch size")
+parser.add_argument("--neg_sample_size", default=10000, type=int, help="Negative sample size, -1 to not use negative sampling")
 parser.add_argument("--dropout", default=0, type=float, help="Dropout rate")
 parser.add_argument("--init_size", default=1e-3, type=float, help="Initial embeddings' scale")
-parser.add_argument("--learning_rate", default=1e-1, type=float, help="Learning rate")
+parser.add_argument("--learning_rate", default=1e-3, type=float, help="Learning rate")
 parser.add_argument("--gamma", default=0, type=float, help="Margin for distance-based losses")
-parser.add_argument("--bias", default="constant", type=str, choices=["constant", "learn", "none"], help="Bias type (none for no bias)")
+parser.add_argument("--bias", default="learn", type=str, choices=["constant", "learn", "none"], help="Bias type (none for no bias)")
 parser.add_argument("--dtype", default="double", type=str, choices=["single", "double"], help="Machine precision")
 parser.add_argument("--double_neg", action="store_true", help="Whether to negative sample both head and tail entities")
 parser.add_argument("--debug", action="store_true", help="Only use 1000 examples for debugging")
@@ -239,20 +239,12 @@ def train(args):
                     os.remove(best_path_current)
 
                 torch.save(model.state_dict(), best_path_current)
-                wandb.save(best_path_current)
+                # wandb.save(best_path_current)
 
                 best_valid_loss = valid_loss
                 counter = 0
                 best_epoch = step
                 logging.info(f"\t New best VALID LOSS={best_valid_loss:.6f}. current best MRR={valid_mrr:.6f} Saved model to {best_path_current}")
-
-                # model_dir = os.path.join(save_dir, "model_checkpoint")
-                # os.makedirs(model_dir, exist_ok=True)
-
-                # torch.save(model.state_dict(), os.path.join(model_dir, f"model_{timestamp}.pt"))
-
-                # --- wandb: save model ---
-                # wandb.save(os.path.join(save_dir, "model.pt"))
 
                 ### model.cuda()
                 model.to(device)
