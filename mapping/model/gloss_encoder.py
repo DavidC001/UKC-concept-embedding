@@ -6,17 +6,6 @@ from sentence_transformers import SentenceTransformer
 import numpy as np
 import torch
 
-
-def choose_device(device_arg: str) -> str:
-    if device_arg != "auto":
-        return device_arg
-    if torch.cuda.is_available():
-        return "cuda"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
-
-
 def encode_glosses(
     glosses: Iterable[str],
     model_name: str,
