@@ -37,8 +37,11 @@ def build_node_sets_for_directions(
     return out
 
 
-def descendant_indices(root: int, hgraph: nx.DiGraph, ent2idx: Dict[str, int]) -> List[int]:
-    nodes = list(nx.descendants(hgraph, root) | {root})
+def descendant_indices(root: int, hgraph: nx.DiGraph, ent2idx: Dict[str, int], max_depth: int = -1) -> List[int]:
+    if max_depth < 0:
+        nodes = list(nx.descendants(hgraph, root) | {root})
+    else:
+        nodes = [n for n, depth in nx.single_source_shortest_path_length(hgraph, root, cutoff=max_depth).items() if depth <= max_depth]
     return [ent2idx[str(n)] for n in nodes if str(n) in ent2idx]
 
 
