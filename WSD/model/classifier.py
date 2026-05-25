@@ -16,7 +16,7 @@ class Projector(nn.Module):
         for i in range(project_num_layers-1):
             layers.append(nn.Dropout(dropout))
             layers.append(nn.Linear(current_dim, hidden_dim))
-            layers.append(nn.ReLU())
+            layers.append(nn.SiLU())
             current_dim = hidden_dim
             
         layers.append(nn.Dropout(dropout))

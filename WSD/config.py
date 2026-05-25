@@ -63,7 +63,7 @@ class WSDConfig:
     """Batch size for evaluation."""
     LEARNING_RATE: float = 1e-4
     """Learning rate for the optimizer."""
-    WEIGHT_DECAY: float = 1e-5
+    WEIGHT_DECAY: float = 1e-4
     """Weight decay for the optimizer."""
     DEVICE: str = "cuda"
     """Device to use for training and evaluation (e.g., "cuda" or "cpu")."""

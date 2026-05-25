@@ -265,7 +265,6 @@ def _train_single_run(cfg: WSDConfig, run_dir: str, run_name: str, run_seed: int
             loader=loaders["train"],
             optimizer=optimizer,
             device=cfg.DEVICE,
-            concept_id_to_index=concept_id_to_index,
             loss_type=loss_type
         )
         print(f"Epoch {epoch}: train_loss={train_loss:.4f}")

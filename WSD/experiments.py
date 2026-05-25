@@ -10,6 +10,7 @@ project_root = Path(__file__).resolve().parent.parent
 
 HYPERPARAMETERS = {
     "NUM_EPOCHS": [10],
+    "NUM_RUNS": [5],
     "ENCODER_TRAIN_MODE": ["lora"],
     "ENCODER_MODEL": ["xlm-roberta-large"],
     "DATA_FILE": [str(project_root / "dataset/embs/sentence_embeddings_FacebookAI_xlm-roberta-large.npz")],
