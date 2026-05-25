@@ -35,7 +35,7 @@ class PipelineConfig:
     lr: float = 1e-3
     """Learning rate"""
 
-    weight_decay: float = 1e-4
+    weight_decay: float = 1e-2
     """Weight decay for mapper optimizer"""
     test_ratio: float = 0.3
     """Ratio of training data to use for testing"""
