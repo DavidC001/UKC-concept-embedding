@@ -1,25 +1,23 @@
 # Knowledge-Based Concept Embeddings
 In this paper, we explored the development of knowledge-based concept token embeddings to bridge the gap between structured knowledge and LLM representations. We then evaluated the embeddings to verify their ability to reconstruct lexical relations and to assess the feasibility of integrating them with LLMs. The results are promising, ensuring the potential for expanding this methodology.
 
-###### This repository consist of 5 sub projects
-
+## Repository Structure
 ```
 anlp/
 ├── data_build/        # creating the UKC triplets dataset
 ├── ukc_embedding/     # training KGE models on the UKC dataset
 ├── geometry/          # evaluating hierarchical structure in embeddings
-├── mapping/           # training an MLP mapper between sentence and concept embeddings
-├── WSD/               # fine-tuning a model for the WSD task
-└── assets/            # visualization assets
+├── mapping/           # training mapper between sentence and concept embeddings
+└── WSD/               # model training for the WSD task
 ```
 
 ### How to use
 
 ##### 1. Generate UKC triplets dataset
-HERE WE CAN SAY THAT THE UKC DATA WE NEED TO GIVE
 
 ```bash
-# First run data_build/triplets_cut_split.py to create the UKC dataset
+# normalize and create the UKC dataset
+python data_build/normalize_concept_hierarchy.py
 python data_build/triplets_cut_split.py
 
 cd ukc_embedding
@@ -63,4 +61,4 @@ python -m WSD.main --mode "experiments"
 
 ### Notice
 
-The datasets used in this project is not uploaded to the repository
+The datasets used in this project are not uploaded to the repository
