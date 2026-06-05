@@ -296,17 +296,6 @@ def parse_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
-def clean_pos_mapping(concept_pos_df: pd.DataFrame) -> pd.DataFrame:
-    """Clean the concept_pos mapping by keeping only the most frequent POS for each concept."""
-    concept_pos_df["concept_id"] = concept_pos_df["concept_id"].astype(int)
-    concept_pos_df["pos"] = concept_pos_df["pos"].astype(int)
-    cleaned_rows = []
-    for concept_id, group in concept_pos_df.groupby("concept_id"):
-        most_freq_pos = group["pos"].mode()
-        if not most_freq_pos.empty:
-            cleaned_rows.append({"concept_id": concept_id, "pos": most_freq_pos.iloc[0]})
-    return pd.DataFrame(cleaned_rows)
-
 def main() -> None:
     args = parse_args()
 
@@ -319,8 +308,6 @@ def main() -> None:
     glosses_df = pd.read_csv(glosses_path)
     relations_df = pd.read_csv(relations_path)
     concept_pos_df = pd.read_csv(pos_path)
-    
-    concept_pos_df = clean_pos_mapping(concept_pos_df)
 
     required_rel_cols = {
         "id",
