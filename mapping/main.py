@@ -133,56 +133,58 @@ def main() -> None:
         out_dim=Y.shape[1],
     )
 
-    test_indices = np.asarray(test_set.indices, dtype=np.int64)
-    test_ids = aligned_ids[test_indices]
-    test_gloss_emb = torch.from_numpy(X[test_indices])
+    def _compute(split: torch.utils.data.Subset, split_name: str) -> None:
+        indices = np.asarray(split.indices, dtype=np.int64)
+        ids = aligned_ids[indices]
+        gloss_emb = torch.from_numpy(X[indices])
+        
+        result.model.eval()
+        mapped = _map_in_batches(
+            model=result.model,
+            gloss_emb=gloss_emb,
+            device=cfg.device,
+            batch_size=cfg.mapper_batch_size,
+        )
+        mapped_norm = l2_normalize(mapped)
 
-    result.model.eval()
-    mapped = _map_in_batches(
-        model=result.model,
-        gloss_emb=test_gloss_emb,
-        device=cfg.device,
-        batch_size=cfg.mapper_batch_size,
-    )
-    mapped_norm = l2_normalize(mapped)
-
-    top_idx, top_scores = topk_neighbors(
-        mapped_norm=mapped_norm,
-        rote_norm=rote_norm,
-        top_k=cfg.top_k,
-    )
-    save_topk_report(
-        out_path=cfg.output_dir / "topk_neighbors.csv",
-        concept_ids=test_ids,
-        top_idx=top_idx,
-        top_scores=top_scores,
-        idx_to_entity=idx_to_entity,
-        concept_id_to_label=id_to_label,
-        entity_id_to_label=entity_id_to_label,
-    )
-
-    print(f"Saved top-k report: {cfg.output_dir / 'topk_neighbors.csv'}")
-
-    
-    if cfg.run_geodesic:
-        run_geodesic_analysis(
-            concept_ids=test_ids,
-            top1_indices=top_idx[:, 0],
+        top_idx, top_scores = topk_neighbors(
+            mapped_norm=mapped_norm,
+            rote_norm=rote_norm,
+            top_k=cfg.top_k,
+        )
+        save_topk_report(
+            out_path=cfg.output_dir / f"topk_neighbors_{split_name}.csv",
+            concept_ids=ids,
+            top_idx=top_idx,
+            top_scores=top_scores,
             idx_to_entity=idx_to_entity,
             concept_id_to_label=id_to_label,
             entity_id_to_label=entity_id_to_label,
-            concept_relations_csv=cfg.concept_relations_csv,
-            output_dir=cfg.output_dir,
-            seed=cfg.random_seed,
         )
 
-    np.savez_compressed(
-        cfg.output_dir / "mapped_embeddings.npz",
-        concept_ids=test_ids,
-        mapped_embeddings=mapped_norm.astype(np.float32),
-    )
-    print(f"Pipeline completed. Outputs in: {cfg.output_dir}")
+        print(f"Saved top-k report: {cfg.output_dir / f'topk_neighbors_{split_name}.csv'}")
+        
+        if cfg.run_geodesic:
+            run_geodesic_analysis(
+                concept_ids=ids,
+                top1_indices=top_idx[:, 0],
+                idx_to_entity=idx_to_entity,
+                concept_id_to_label=id_to_label,
+                entity_id_to_label=entity_id_to_label,
+                concept_relations_csv=cfg.concept_relations_csv,
+                output_dir=cfg.output_dir / split_name,
+                seed=cfg.random_seed,
+            )
 
+        np.savez_compressed(
+            cfg.output_dir / f"mapped_embeddings_{split_name}.npz",
+            concept_ids=ids,
+            mapped_embeddings=mapped_norm.astype(np.float32),
+        )
+
+    _compute(train_set, "train")
+    _compute(test_set, "test")
+    print(f"Pipeline completed. Outputs in: {cfg.output_dir}")
 
 if __name__ == "__main__":
     main()
