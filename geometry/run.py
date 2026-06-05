@@ -54,6 +54,7 @@ def main(args: argparse.Namespace) -> None:
     run_all = "all" in experiments
     plot_tag = "_inverse" if args.inverse_relation else ""
 
+    print("Loading embeddings and hierarchy...")
     ent2idx = load_entity_to_index(args.entity_to_id)
     emb = load_embeddings(args.checkpoint, map_location="cpu")
     g_whitened, _, _ = whiten_embeddings(emb)
@@ -91,6 +92,8 @@ def main(args: argparse.Namespace) -> None:
     )
     for r in roots_iter:
         node_members.update(build_node_sets_for_directions(hgraph, r, min_size=args.min_category_size))
+
+    print(f"Built node sets for {len(node_members)} nodes in the hierarchy with at least {args.min_category_size} members.")
 
     dirs_original = estimate_dirs(g_whitened, ent2idx, node_members)
     dirs_shuffled = estimate_dirs(g_shuffled, ent2idx, node_members)
