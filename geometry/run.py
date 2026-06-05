@@ -47,6 +47,7 @@ def main(args: argparse.Namespace) -> None:
     os.makedirs(args.output_dir, exist_ok=True)
     out_dir = Path(args.output_dir)
 
+    print("Loading embeddings and hierarchy...")
     ent2idx = load_entity_to_index(args.entity_to_id)
     emb = load_embeddings(args.checkpoint, map_location="cpu")
     g_whitened, _, _ = whiten_embeddings(emb)
@@ -85,6 +86,8 @@ def main(args: argparse.Namespace) -> None:
     for r in roots_iter:
         node_members.update(build_node_sets_for_directions(hgraph, r, min_size=args.min_category_size))
 
+    print(f"Built node sets for {len(node_members)} nodes in the hierarchy with at least {args.min_category_size} members.")
+
     dirs_original = estimate_dirs(g_whitened, ent2idx, node_members)
     dirs_shuffled = estimate_dirs(g_shuffled, ent2idx, node_members)
 
@@ -93,10 +96,13 @@ def main(args: argparse.Namespace) -> None:
     """
     Compute the heatmap of cosine similarities between category directions, and compare it to the proximity in the hierarchy (shortest path distance).
     """
+    print("Computing cosine similarity matrices for category directions...")
     cos_lda_original = cosine_matrix_from_dirs(kept_nodes, dirs_original, version="lda")
     cos_lda_shuffled = cosine_matrix_from_dirs(kept_nodes, dirs_shuffled, version="lda")
+    print("Computing shortest path matrix for hierarchy proximity...")
     dist_prox = shortest_path_matrix(hgraph, kept_nodes)
 
+    print("Plotting heatmaps...")
     plot_heatmaps(
         out_dir / "heatmap_hierarchy_lda.png",
         dist_prox,
@@ -109,6 +115,7 @@ def main(args: argparse.Namespace) -> None:
     """
     Compute orthogonality metrics for category directions, comparing original vs shuffled embeddings, and parent vs random parent.
     """
+    print("Computing orthogonality metrics...")
     metrics = compute_orthogonality_metrics(
         hgraph=hgraph,
         sorted_nodes=kept_nodes,
@@ -118,6 +125,7 @@ def main(args: argparse.Namespace) -> None:
         seed=args.seed,
     )
 
+    print("Plotting orthogonality curves...")
     plot_orthogonality_curves(
         out_dir / "hier_orthogonality_b.png",
         metrics,
@@ -135,6 +143,7 @@ def main(args: argparse.Namespace) -> None:
     """
     Compute and plot metrics on binary features
     """
+    print("Computing projection feature statistics...")
     proj_stats = compute_projection_feature_stats(
         g_whitened=g_whitened,
         g_shuffled=g_shuffled,
@@ -145,6 +154,7 @@ def main(args: argparse.Namespace) -> None:
         train_ratio=args.feature_train_ratio,
         random_sample_size=args.feature_random_sample_size,
     )
+    print("Plotting projection feature figure...")
     plot_projection_feature_figure(out_dir / "feature_projection.png", proj_stats)
 
 
