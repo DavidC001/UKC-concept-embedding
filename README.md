@@ -1,5 +1,8 @@
-# Knowledge-Based Concept Embeddings
-In this paper, we explored the development of knowledge-based concept token embeddings to bridge the gap between structured knowledge and LLM representations. We then evaluated the embeddings to verify their ability to reconstruct lexical relations and to assess the feasibility of integrating them with LLMs. The results are promising, ensuring the potential for expanding this methodology.
+# Semantics over Structure 
+Large Language Models (LLMs) acquire world knowledge implicitly through textual patterns, resulting in latent representations that are opaque, difficult to inspect, and challenging to edit. 
+This work investigates whether curated Knowledge Graphs (KGs) can serve as a controlled, editable semantic layer to ground these models. Using the Universal Knowledge Core (UKC), we generate Knowledge Graph Embeddings (KGEs) and test their ability to replicate the geometric structures, such as hierarchical orthogonality, found in LLM representations. 
+To distinguish between genuine semantic alignment and mere high-dimensional artifacts, we introduce a "scrambled" version of the UKC that preserves graph statistics while destroying semantic relations. Our results demonstrate that while KGEs can successfully recreate the geometric properties of both true and scrambled worlds, the alignment between KGEs and LLM embeddings depends on the semantic integrity of the underlying graph. 
+These findings suggest that curated knowledge bases can act as a valid "semantic shadow" of the world, offering a principled path toward more controllable and steerable language models.
 
 ## Repository Structure
 ```
@@ -8,7 +11,6 @@ anlp/
 ├── ukc_embedding/     # training KGE models on the UKC dataset
 ├── geometry/          # evaluating hierarchical structure in embeddings
 ├── mapping/           # training mapper between sentence and concept embeddings
-└── WSD/               # model training for the WSD task
 ```
 
 ### How to use
@@ -18,7 +20,11 @@ anlp/
 ```bash
 # normalize and create the UKC dataset
 python data_build/normalize_concept_hierarchy.py
-python data_build/triplets_cut_split.py
+
+# to generate UKC_original dataset
+python data_build/triplets_cut_split_original.py 
+# or to generate UKC_control dataset
+python data_build/triplets_cut_split_control.py 
 
 cd ukc_embedding
 
