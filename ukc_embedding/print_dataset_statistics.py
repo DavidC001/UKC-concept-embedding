@@ -23,5 +23,5 @@ def print_dataset_statistics(file_path: Path) -> None:
         print(f"{relation}: {count}")
         
 if __name__ == "__main__":
-    dataset_path = Path("data/UKC_old/train")
+    dataset_path = Path("data/UKC/train")
     print_dataset_statistics(dataset_path)
