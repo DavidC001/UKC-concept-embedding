@@ -10,13 +10,16 @@ def load_concepts(concepts_csv: str) -> pd.DataFrame:
     return pd.read_csv(concepts_csv, usecols=["id", "label"])
 
 
-def build_hierarchy_graph(relations_csv: str, relation_type: int = 20) -> nx.DiGraph:
+def build_hierarchy_graph(relations_csv: str, relation_type: int = 20, inverse: bool = False) -> nx.DiGraph:
     rel = pd.read_csv(relations_csv, usecols=["relation_type", "src_con_id", "trg_con_id"])
     rel = rel[rel["relation_type"] == relation_type]
 
     # relation_type=20 is has_hyponym: src is parent, trg is child.
     g = nx.DiGraph()
-    g.add_edges_from(rel[["src_con_id", "trg_con_id"]].itertuples(index=False, name=None))
+    if inverse:
+        g.add_edges_from(rel[["trg_con_id", "src_con_id"]].itertuples(index=False, name=None))
+    else:
+        g.add_edges_from(rel[["src_con_id", "trg_con_id"]].itertuples(index=False, name=None))
     return g
 
 
