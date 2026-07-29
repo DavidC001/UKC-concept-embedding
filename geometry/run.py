@@ -46,6 +46,13 @@ sns.set_theme(context="paper", style="white", palette="colorblind", font="DejaVu
 def main(args: argparse.Namespace) -> None:
     os.makedirs(args.output_dir, exist_ok=True)
     out_dir = Path(args.output_dir)
+    experiments = {
+        experiment.strip().lower()
+        for experiment in args.experiments.split(",")
+        if experiment.strip()
+    }
+    run_all = "all" in experiments
+    plot_tag = "_inverse" if args.inverse_relation else ""
 
     ent2idx = load_entity_to_index(args.entity_to_id)
     emb = load_embeddings(args.checkpoint, map_location="cpu")
@@ -56,7 +63,7 @@ def main(args: argparse.Namespace) -> None:
     g_shuffled = g_whitened[perm]
 
     concepts_df = load_concepts(args.concepts_csv)
-    hgraph = build_hierarchy_graph(args.concept_relations_csv, relation_type=args.hierarchy_relation_type)
+    hgraph = build_hierarchy_graph(args.concept_relations_csv, relation_type=args.hierarchy_relation_type, inverse=args.inverse_relation)
     roots = graph_roots(hgraph)
     
     # breakpoint()
@@ -93,114 +100,119 @@ def main(args: argparse.Namespace) -> None:
     """
     Compute the heatmap of cosine similarities between category directions, and compare it to the proximity in the hierarchy (shortest path distance).
     """
-    cos_lda_original = cosine_matrix_from_dirs(kept_nodes, dirs_original, version="lda")
-    cos_lda_shuffled = cosine_matrix_from_dirs(kept_nodes, dirs_shuffled, version="lda")
-    dist_prox = shortest_path_matrix(hgraph, kept_nodes)
+    if run_all or "heatmap" in experiments:
+        cos_lda_original = cosine_matrix_from_dirs(kept_nodes, dirs_original, version="lda")
+        cos_lda_shuffled = cosine_matrix_from_dirs(kept_nodes, dirs_shuffled, version="lda")
+        dist_prox = shortest_path_matrix(hgraph, kept_nodes)
 
-    plot_heatmaps(
-        out_dir / "heatmap_hierarchy_lda.png",
-        dist_prox,
-        cos_lda_original,
-        cos_lda_shuffled,
-        title_prefix="Hierarchy",
-    )
+        plot_heatmaps(
+            out_dir / f"heatmap_hierarchy_lda{plot_tag}.png",
+            dist_prox,
+            cos_lda_original,
+            cos_lda_shuffled,
+            title_prefix="Hierarchy",
+        )
 
 
     """
     Compute orthogonality metrics for category directions, comparing original vs shuffled embeddings, and parent vs random parent.
     """
-    metrics = compute_orthogonality_metrics(
-        hgraph=hgraph,
-        sorted_nodes=kept_nodes,
-        dirs_original=dirs_original,
-        dirs_shuffled=dirs_shuffled,
-        version="lda",
-        seed=args.seed,
-    )
+    if run_all or "orthogonality" in experiments:
+        metrics = compute_orthogonality_metrics(
+            hgraph=hgraph,
+            sorted_nodes=kept_nodes,
+            dirs_original=dirs_original,
+            dirs_shuffled=dirs_shuffled,
+            version="lda",
+            seed=args.seed,
+        )
 
-    plot_orthogonality_curves(
-        out_dir / "hier_orthogonality_b.png",
-        metrics,
-        key="b",
-        title=r"cos(l_w - l_parent, l_parent)",
-    )
-    plot_orthogonality_curves(
-        out_dir / "hier_orthogonality_e.png",
-        metrics,
-        key="e",
-        title=r"cos(l_w - l_parent, l_parent - l_grandparent)",
-    )
+        plot_orthogonality_curves(
+            out_dir / f"hier_orthogonality_b{plot_tag}.png",
+            metrics,
+            key="b",
+            title=r"cos(l_w - l_parent, l_parent)",
+        )
+        plot_orthogonality_curves(
+            out_dir / f"hier_orthogonality_e{plot_tag}.png",
+            metrics,
+            key="e",
+            title=r"cos(l_w - l_parent, l_parent - l_grandparent)",
+        )
 
 
     """
     Compute and plot metrics on binary features
     """
-    proj_stats = compute_projection_feature_stats(
-        g_whitened=g_whitened,
-        g_shuffled=g_shuffled,
-        ent2idx=ent2idx,
-        node_members=node_members,
-        feature_nodes=kept_nodes,
-        seed=args.seed,
-        train_ratio=args.feature_train_ratio,
-        random_sample_size=args.feature_random_sample_size,
-    )
-    plot_projection_feature_figure(out_dir / "feature_projection.png", proj_stats)
+    if run_all or "feature_projection" in experiments:
+        proj_stats = compute_projection_feature_stats(
+            g_whitened=g_whitened,
+            g_shuffled=g_shuffled,
+            ent2idx=ent2idx,
+            node_members=node_members,
+            feature_nodes=kept_nodes,
+            seed=args.seed,
+            train_ratio=args.feature_train_ratio,
+            random_sample_size=args.feature_random_sample_size,
+        )
+        plot_projection_feature_figure(out_dir / f"feature_projection{plot_tag}.png", proj_stats)
 
 
     """
     Plot 2D and 3D visualizations of the animal and plant subtrees, highlighting the positions of the category directions for the main categories 
     (animal, plant, mammal, bird, fish, reptile).
     """
-    id_to_label = {str(int(r.id)): str(r.label).lower() for r in concepts_df.itertuples(index=False)}
-    vocab_list = build_vocab_list(emb.shape[0], ent2idx, id_to_label=id_to_label)
+    if run_all or "visualization" in experiments:
+        print("Running 2D and 3D visualizations of the animal and plant subtrees...")
+        id_to_label = {str(int(r.id)): str(r.label).lower() for r in concepts_df.itertuples(index=False)}
+        vocab_list = build_vocab_list(emb.shape[0], ent2idx, id_to_label=id_to_label)
 
-    mammals_id = find_child_by_label(hgraph, concepts_df, animal_root, "mammal")
-    birds_id = find_child_by_label(hgraph, concepts_df, animal_root, "bird")
-    fish_id = find_child_by_label(hgraph, concepts_df, animal_root, "fish")
-    reptile_id = find_child_by_label(hgraph, concepts_df, animal_root, "reptile")
+        mammals_id = find_child_by_label(hgraph, concepts_df, animal_root, "mammal")
+        birds_id = find_child_by_label(hgraph, concepts_df, animal_root, "bird")
+        fish_id = find_child_by_label(hgraph, concepts_df, animal_root, "fish")
+        reptile_id = find_child_by_label(hgraph, concepts_df, animal_root, "reptile")
 
-    ids = {
-        "animal": animal_root,
-        "plant": plant_root,
-        "mammal": mammals_id,
-        "bird": birds_id,
-        "fish": fish_id,
-        "reptile": reptile_id,
-    }
+        ids = {
+            "animal": animal_root,
+            "plant": plant_root,
+            "mammal": mammals_id,
+            "bird": birds_id,
+            "fish": fish_id,
+            "reptile": reptile_id,
+        }
 
-    missing = [k for k, v in ids.items() if v not in dirs_original]
-    if missing:
-        raise RuntimeError(
-            "Missing directional estimates for: " + ", ".join(missing) +
-            ". Try lowering --min_category_size."
+        missing = [k for k, v in ids.items() if v not in dirs_original]
+        if missing:
+            raise RuntimeError(
+                "Missing directional estimates for: " + ", ".join(missing) +
+                ". Try lowering --min_category_size."
+            )
+
+        idx_sets = {
+            "animal": descendant_indices(animal_root, hgraph, ent2idx, max_depth=5),
+            "plant": descendant_indices(plant_root, hgraph, ent2idx, max_depth=5),
+            "mammal": descendant_indices(mammals_id, hgraph, ent2idx, max_depth=5),
+            "bird": descendant_indices(birds_id, hgraph, ent2idx, max_depth=5),
+            "fish": descendant_indices(fish_id, hgraph, ent2idx, max_depth=5),
+            "reptile": descendant_indices(reptile_id, hgraph, ent2idx, max_depth=5),
+        }
+
+        run_visual_2d(
+            out_dir / f"three_2d_plots_rotre_hierarchy{plot_tag}.png",
+            g_whitened,
+            vocab_list,
+            idx_sets,
+            dirs_original,
+            ids,
         )
 
-    idx_sets = {
-        "animal": descendant_indices(animal_root, hgraph, ent2idx, max_depth=5),
-        "plant": descendant_indices(plant_root, hgraph, ent2idx, max_depth=5),
-        "mammal": descendant_indices(mammals_id, hgraph, ent2idx, max_depth=5),
-        "bird": descendant_indices(birds_id, hgraph, ent2idx, max_depth=5),
-        "fish": descendant_indices(fish_id, hgraph, ent2idx, max_depth=5),
-        "reptile": descendant_indices(reptile_id, hgraph, ent2idx, max_depth=5),
-    }
-
-    run_visual_2d(
-        out_dir / "three_2d_plots_rotre_hierarchy.png",
-        g_whitened,
-        vocab_list,
-        idx_sets,
-        dirs_original,
-        ids,
-    )
-
-    run_visual_3d(
-        out_dir / "two_3d_plots_rotre_hierarchy.png",
-        g_whitened,
-        idx_sets,
-        dirs_original,
-        ids,
-    )
+        run_visual_3d(
+            out_dir / f"two_3d_plots_rotre_hierarchy{plot_tag}.png",
+            g_whitened,
+            idx_sets,
+            dirs_original,
+            ids,
+        )
 
 
     """
@@ -212,32 +224,43 @@ def main(args: argparse.Namespace) -> None:
         "num_nodes_used_for_metrics": len(kept_nodes),
         "animal_root": int(animal_root),
         "plant_root": int(plant_root),
-        "mammal_node": int(mammals_id),
-        "bird_node": int(birds_id),
-        "fish_node": int(fish_id),
-        "reptile_node": int(reptile_id),
-        "orthogonality": {
-            "b": {
-                "original_parent": float(np.mean(metrics["b"]["original_parent"])) if metrics["b"]["original_parent"] else None,
-                "original_random_parent": float(np.mean(metrics["b"]["original_random_parent"])) if metrics["b"]["original_random_parent"] else None,
-                "shuffled_parent": float(np.mean(metrics["b"]["shuffled_parent"])) if metrics["b"]["shuffled_parent"] else None,
-            },
-            "e": {
-                "original_parent": float(np.mean(metrics["e"]["original_parent"])) if metrics["e"]["original_parent"] else None,
-                "original_random_parent": float(np.mean(metrics["e"]["original_random_parent"])) if metrics["e"]["original_random_parent"] else None,
-                "shuffled_parent": float(np.mean(metrics["e"]["shuffled_parent"])) if metrics["e"]["shuffled_parent"] else None,
-            },
-        },
-        "feature_projection": {
-            "num_features": len(proj_stats.get("nodes", [])),
-            "original_train_mean_global": float(np.mean(proj_stats["original"]["train_mean"])) if proj_stats["original"]["train_mean"] else None,
-            "original_test_mean_global": float(np.mean(proj_stats["original"]["test_mean"])) if proj_stats["original"]["test_mean"] else None,
-            "original_random_mean_global": float(np.mean(proj_stats["original"]["random_mean"])) if proj_stats["original"]["random_mean"] else None,
-            "shuffled_train_mean_global": float(np.mean(proj_stats["shuffled"]["train_mean"])) if proj_stats["shuffled"]["train_mean"] else None,
-            "shuffled_test_mean_global": float(np.mean(proj_stats["shuffled"]["test_mean"])) if proj_stats["shuffled"]["test_mean"] else None,
-            "shuffled_random_mean_global": float(np.mean(proj_stats["shuffled"]["random_mean"])) if proj_stats["shuffled"]["random_mean"] else None,
-        },
+        "inverse_relation": bool(args.inverse_relation),
     }
+    if run_all or "visualization" in experiments:
+        metrics_summary.update({
+            "mammal_node": int(mammals_id),
+            "bird_node": int(birds_id),
+            "fish_node": int(fish_id),
+            "reptile_node": int(reptile_id),
+        })
+    if run_all or "orthogonality" in experiments:
+        metrics_summary.update({
+            "orthogonality": {
+                "b": {
+                    "original_parent": float(np.mean(metrics["b"]["original_parent"])) if metrics["b"]["original_parent"] else None,
+                    "original_random_parent": float(np.mean(metrics["b"]["original_random_parent"])) if metrics["b"]["original_random_parent"] else None,
+                    "shuffled_parent": float(np.mean(metrics["b"]["shuffled_parent"])) if metrics["b"]["shuffled_parent"] else None,
+                },
+                "e": {
+                    "original_parent": float(np.mean(metrics["e"]["original_parent"])) if metrics["e"]["original_parent"] else None,
+                    "original_random_parent": float(np.mean(metrics["e"]["original_random_parent"])) if metrics["e"]["original_random_parent"] else None,
+                    "shuffled_parent": float(np.mean(metrics["e"]["shuffled_parent"])) if metrics["e"]["shuffled_parent"] else None,
+                },
+            }
+        })
+    if run_all or "feature_projection" in experiments:
+        metrics_summary.update({
+            "feature_projection": {
+                "num_features": len(proj_stats.get("nodes", [])),
+                "original_train_mean_global": float(np.mean(proj_stats["original"]["train_mean"])) if proj_stats["original"]["train_mean"] else None,
+                "original_test_mean_global": float(np.mean(proj_stats["original"]["test_mean"])) if proj_stats["original"]["test_mean"] else None,
+                "original_random_mean_global": float(np.mean(proj_stats["original"]["random_mean"])) if proj_stats["original"]["random_mean"] else None,
+                "shuffled_train_mean_global": float(np.mean(proj_stats["shuffled"]["train_mean"])) if proj_stats["shuffled"]["train_mean"] else None,
+                "shuffled_test_mean_global": float(np.mean(proj_stats["shuffled"]["test_mean"])) if proj_stats["shuffled"]["test_mean"] else None,
+                "shuffled_random_mean_global": float(np.mean(proj_stats["shuffled"]["random_mean"])) if proj_stats["shuffled"]["random_mean"] else None,
+            },
+        })
+        
     save_json(out_dir / "metrics_summary.json", metrics_summary)
 
     print("Saved outputs to:", out_dir)
@@ -252,6 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--concept_relations_csv", type=str, default="dataset/concept_relations.csv")
     
     parser.add_argument("--hierarchy_relation_type", type=int, default=20)
+    parser.add_argument("--inverse_relation", action="store_true", help="If set, will invert the hierarchy relation type for analysis.")
     
     parser.add_argument("--animal_root_id", type=int, default=37)
     parser.add_argument("--plant_root_id", type=int, default=38)
@@ -262,6 +286,10 @@ def build_parser() -> argparse.ArgumentParser:
     
     parser.add_argument("--seed", type=int, default=100)
     parser.add_argument("--output_dir", type=str, default="geometry/outputs")
+    
+    # what experiments to run, for example, "all" or "heatmap,orthogonality,feature_projection,visualization"
+    parser.add_argument("--experiments", type=str, default="all")
+    
     return parser
 
 
