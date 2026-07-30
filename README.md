@@ -59,11 +59,6 @@ cd mapping
 python main.py
 ```
 
-##### 5. Training and evaluating a WSD
-
-```bash
-python -m WSD.main --mode "experiments"
-```
 
 ### Notice
 
