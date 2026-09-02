@@ -184,13 +184,13 @@ def main(args: argparse.Namespace) -> None:
             "reptile": reptile_id,
         }
 
-        missing = [k for k, v in ids.items() if v not in dirs_original]
-        if missing:
-            raise RuntimeError(
-                "Missing directional estimates for: " + ", ".join(missing) +
-                ". Try lowering --min_category_size."
-            )
-
+    missing = [k for k, v in ids.items() if v not in dirs_original]
+    if missing:
+        print(
+            "Missing directional estimates for: " + ", ".join(missing) +
+            ". Try lowering --min_category_size."
+        )
+    else:
         idx_sets = {
             "animal": descendant_indices(animal_root, hgraph, ent2idx, max_depth=5),
             "plant": descendant_indices(plant_root, hgraph, ent2idx, max_depth=5),
