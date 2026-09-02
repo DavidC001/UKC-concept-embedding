@@ -181,36 +181,36 @@ def main(args: argparse.Namespace) -> None:
 
     missing = [k for k, v in ids.items() if v not in dirs_original]
     if missing:
-        raise RuntimeError(
+        print(
             "Missing directional estimates for: " + ", ".join(missing) +
             ". Try lowering --min_category_size."
         )
+    else:
+        idx_sets = {
+            "animal": descendant_indices(animal_root, hgraph, ent2idx, max_depth=5),
+            "plant": descendant_indices(plant_root, hgraph, ent2idx, max_depth=5),
+            "mammal": descendant_indices(mammals_id, hgraph, ent2idx, max_depth=5),
+            "bird": descendant_indices(birds_id, hgraph, ent2idx, max_depth=5),
+            "fish": descendant_indices(fish_id, hgraph, ent2idx, max_depth=5),
+            "reptile": descendant_indices(reptile_id, hgraph, ent2idx, max_depth=5),
+        }
 
-    idx_sets = {
-        "animal": descendant_indices(animal_root, hgraph, ent2idx, max_depth=5),
-        "plant": descendant_indices(plant_root, hgraph, ent2idx, max_depth=5),
-        "mammal": descendant_indices(mammals_id, hgraph, ent2idx, max_depth=5),
-        "bird": descendant_indices(birds_id, hgraph, ent2idx, max_depth=5),
-        "fish": descendant_indices(fish_id, hgraph, ent2idx, max_depth=5),
-        "reptile": descendant_indices(reptile_id, hgraph, ent2idx, max_depth=5),
-    }
+        run_visual_2d(
+            out_dir / "three_2d_plots_rotre_hierarchy.png",
+            g_whitened,
+            vocab_list,
+            idx_sets,
+            dirs_original,
+            ids,
+        )
 
-    run_visual_2d(
-        out_dir / "three_2d_plots_rotre_hierarchy.png",
-        g_whitened,
-        vocab_list,
-        idx_sets,
-        dirs_original,
-        ids,
-    )
-
-    run_visual_3d(
-        out_dir / "two_3d_plots_rotre_hierarchy.png",
-        g_whitened,
-        idx_sets,
-        dirs_original,
-        ids,
-    )
+        run_visual_3d(
+            out_dir / "two_3d_plots_rotre_hierarchy.png",
+            g_whitened,
+            idx_sets,
+            dirs_original,
+            ids,
+        )
 
 
     """
