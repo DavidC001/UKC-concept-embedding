@@ -22,10 +22,13 @@ class BaseH(KGModel):
         self.rel_diag = nn.Embedding(self.sizes[1], self.rank)
         self.rel_diag.weight.data = 2 * torch.rand((self.sizes[1], self.rank), dtype=self.data_type) - 1.0
         self.multi_c = args.multi_c
-        if self.multi_c:
-            c_init = torch.ones((self.sizes[1], 1), dtype=self.data_type)
-        else:
-            c_init = torch.ones((1, 1), dtype=self.data_type)
+        
+        if not self.multi_c:
+            raise ValueError(
+                "{} requires per-relation curvatures: rerun with --multi_c.".format(type(self).__name__)
+            )
+        c_init = torch.ones((self.sizes[1], 1), dtype=self.data_type)
+        
         self.c = nn.Parameter(c_init, requires_grad=True)
 
     def get_rhs(self, queries, eval_mode):
