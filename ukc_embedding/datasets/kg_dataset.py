@@ -28,31 +28,13 @@ class KGDataset(object):
         filters_file = open(os.path.join(self.data_path, "to_skip.pickle"), "rb")
         self.to_skip = pkl.load(filters_file)
         filters_file.close()
+        # relations whose reciprocal reuses the same id (data_build/canonicalize_relations.py)
+        sym_file = os.path.join(self.data_path, "symmetric.pickle")
+        self.symmetric = sorted(pkl.load(open(sym_file, "rb"))) if os.path.exists(sym_file) else []
         max_axis = np.max(self.data["train"], axis=0)
         self.n_entities = int(max(max_axis[0], max_axis[2]) + 1)
         self.n_predicates = int(max_axis[1] + 1) * 2
         
-        # # --- START: ADDED MAPPING LOADING ---
-        # # Assuming mappings are saved as pickle files (common format)
-        # try:
-        #     with open(os.path.join(self.data_path, "entity_to_id.pickle"), "rb") as f:
-        #         self.entity_to_id = pkl.load(f)
-        #     with open(os.path.join(self.data_path, "relation_to_id.pickle"), "rb") as f:
-        #         self.relation_to_id = pkl.load(f)
-        # except FileNotFoundError:
-        #     # Fallback if mapping files don't exist
-        #     print("Warning: Entity/Relation ID mapping files not found. Using integer IDs.")
-        #     self.entity_to_id = {i: str(i) for i in range(self.n_entities)}
-        #     self.relation_to_id = {i: str(i) for i in range(self.n_predicates // 2)}
-            
-        # # Create inverse mappings (ID to Name)
-        # self.id_to_entity = {v: k for k, v in self.entity_to_id.items()}
-        # self.id_to_relation = {v: k for k, v in self.relation_to_id.items()}
-        # # --- END: ADDED MAPPING LOADING ---
-
-        # --- START: ADDED MAPPING LOADING ---
-        # NOTE: This assumes 'entity_to_id.pickle' and 'relation_to_id.pickle' exist 
-        # in your data directory (data_path) and contain {name: id} mappings.
         try:
             with open(os.path.join(self.data_path, "entity_to_id.pickle"), "rb") as f:
                 entity_name_to_id = pkl.load(f)
@@ -60,6 +42,8 @@ class KGDataset(object):
                 relation_name_to_id = pkl.load(f)
             
             # Create the essential ID-to-Name maps for easy lookup
+            self.entity_to_id = entity_name_to_id
+            self.relation_to_id = relation_name_to_id
             self.id_to_entity = {v: k for k, v in entity_name_to_id.items()}
             self.id_to_relation = {v: k for k, v in relation_name_to_id.items()}
             
@@ -69,7 +53,6 @@ class KGDataset(object):
             self.id_to_entity = {i: str(i) for i in range(self.n_entities)}
             self.id_to_relation = {i: str(i) for i in range(self.n_predicates // 2)}
             
-        # --- END: ADDED MAPPING LOADING ---
         
     def get_examples(self, split, rel_idx=-1):
         """Get examples in a split.
@@ -87,7 +70,8 @@ class KGDataset(object):
             tmp = np.copy(copy[:, 0])
             copy[:, 0] = copy[:, 2]
             copy[:, 2] = tmp
-            copy[:, 1] += self.n_predicates // 2
+            inverse = ~np.isin(copy[:, 1], self.symmetric)
+            copy[inverse, 1] += self.n_predicates // 2
             examples = np.vstack((examples, copy))
         if rel_idx >= 0:
             examples = examples[examples[:, 1] == rel_idx]

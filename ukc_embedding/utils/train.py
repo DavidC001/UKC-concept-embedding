@@ -4,19 +4,6 @@ import os
 
 
 def get_savedir(model, dataset, rank):
-    # """Get unique saving directory name."""
-    # dt = datetime.datetime.now()
-    # date = dt.strftime("%m_%d")
-    # save_dir = os.path.join(
-    #     os.environ["LOG_DIR"], date, dataset,
-    #     # model + dt.strftime('_%H_%M_%S')
-    # )
-    # save_dir = os.path.join(
-    #     save_dir, rank,
-    #     model + dt.strftime('_%H_%M_%S')
-    # )
-    # os.makedirs(save_dir)
-    # return save_dir
     """Get unique saving directory name."""
     dt = datetime.datetime.now()
     date = dt.strftime("%m_%d")
@@ -26,6 +13,11 @@ def get_savedir(model, dataset, rank):
     )
     os.makedirs(save_dir)
     return save_dir
+
+
+def scalar_metrics(metrics):
+    """Metrics dict -> {name: float}, dropping the per-query all_ranks."""
+    return {k: float(v) for k, v in metrics.items() if k != "all_ranks"}
 
 
 def avg_both(mrs, mrrs, hits, medians, mean_rank_90s, all_rankss):
@@ -70,17 +62,6 @@ def format_metrics(metrics, split):
     # median += "median: {:.3f}".format(metrics['median'])
     result += "median: {:.3f}".format(metrics['median'])
     return result
-
-
-def write_metrics(writer, step, metrics, split):
-    """Write metrics to tensorboard logs."""
-    writer.add_scalar('{}_mr'.format(split), metrics['mean_rank'], global_step=step)
-    writer.add_scalar('{}_mrr'.format(split), metrics['mrr'], global_step=step)
-    writer.add_scalar('{}_hits@1'.format(split), metrics['hits@[1,3,10]'][0], global_step=step)
-    writer.add_scalar('{}_hits@3'.format(split), metrics['hits@[1,3,10]'][1], global_step=step)
-    writer.add_scalar('{}_hits@10'.format(split), metrics['hits@[1,3,10]'][2], global_step=step)
-    writer.add_scalar('{}_mean_rank_90'.format(split), metrics['mean_rank_90'], global_step=step)
-    writer.add_scalar('{}_median'.format(split), metrics['median'], global_step=step)
 
 
 def count_params(model):

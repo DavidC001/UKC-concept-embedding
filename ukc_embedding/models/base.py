@@ -11,9 +11,9 @@ class KGModel(nn.Module, ABC):
     Attributes:
         sizes: Tuple[int, int, int] with (n_entities, n_relations, n_entities)
         rank: integer for embedding dimension
+        sym: torch.Tensor with indices of symmetric relations (for inverse relation handling)
         dropout: float for dropout rate
         gamma: torch.nn.Parameter for margin in ranking-based loss
-        data_type: torch.dtype for machine precision (single or double)
         bias: string for whether to learn or fix bias (none for no bias)
         init_size: float for embeddings' initialization scale
         entity: torch.nn.Embedding with entity embeddings
@@ -22,25 +22,29 @@ class KGModel(nn.Module, ABC):
         bt: torch.nn.Embedding with tail entity bias embeddings
     """
 
-    def __init__(self, sizes, rank, dropout, gamma, data_type, bias, init_size):
+    def __init__(
+            self, 
+            sizes, rank, sym,
+            dropout, gamma, bias, init_size
+            ):
         """Initialize KGModel."""
         super(KGModel, self).__init__()
-        if data_type == 'double':
-            self.data_type = torch.double
-        else:
-            self.data_type = torch.float
+        
         self.sizes = sizes
         self.rank = rank
         self.dropout = dropout
         self.bias = bias
         self.init_size = init_size
+        self.data_type = torch.float  # tables are float32 (subclasses initialise with this dtype)
         self.gamma = nn.Parameter(torch.Tensor([gamma]), requires_grad=False)
         self.entity = nn.Embedding(sizes[0], rank)
         self.rel = nn.Embedding(sizes[1], rank)
         self.bh = nn.Embedding(sizes[0], 1)
-        self.bh.weight.data = torch.zeros((sizes[0], 1), dtype=self.data_type)
+        self.bh.weight.data = torch.zeros((sizes[0], 1))
         self.bt = nn.Embedding(sizes[0], 1)
-        self.bt.weight.data = torch.zeros((sizes[0], 1), dtype=self.data_type)
+        self.bt.weight.data = torch.zeros((sizes[0], 1))
+        # relations that are their own inverse: queried with the same relation in both directions
+        self.sym = torch.as_tensor(list(sym) if sym is not None else [], dtype=torch.long)
 
     @abstractmethod
     def get_queries(self, queries):
@@ -296,7 +300,8 @@ class KGModel(nn.Module, ABC):
                 tmp = torch.clone(q[:, 0])
                 q[:, 0] = q[:, 2]
                 q[:, 2] = tmp
-                q[:, 1] += self.sizes[1] // 2
+                inverse = ~torch.isin(q[:, 1], self.sym.to(q.device)) if self.sym is not None and len(self.sym) else torch.ones_like(q[:, 1], dtype=torch.bool)
+                q[inverse, 1] += self.sizes[1] // 2
             ranks = self.get_ranking(q, filters[m], batch_size=batch_size)
 
             all_ranks[m] = ranks.cpu()      # ← ADD THIS

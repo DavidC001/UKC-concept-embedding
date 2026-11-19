@@ -15,8 +15,7 @@ class BaseH(KGModel):
     """Trainable curvature for each relationship."""
 
     def __init__(self, args):
-        super(BaseH, self).__init__(args.sizes, args.rank, args.dropout, args.gamma, args.dtype, args.bias,
-                                    args.init_size)
+        super(BaseH, self).__init__(args.sizes, args.rank, args.sym, args.dropout, args.gamma, args.bias, args.init_size)
         self.entity.weight.data = self.init_size * torch.randn((self.sizes[0], self.rank), dtype=self.data_type)
         self.rel.weight.data = self.init_size * torch.randn((self.sizes[1], 2 * self.rank), dtype=self.data_type)
         self.rel_diag = nn.Embedding(self.sizes[1], self.rank)
@@ -84,10 +83,7 @@ class AttH(BaseH):
         self.context_vec = nn.Embedding(self.sizes[1], self.rank)
         self.context_vec.weight.data = self.init_size * torch.randn((self.sizes[1], self.rank), dtype=self.data_type)
         self.act = nn.Softmax(dim=1)
-        if args.dtype == "double":
-            self.scale = torch.Tensor([1. / np.sqrt(self.rank)]).double().cuda()
-        else:
-            self.scale = torch.Tensor([1. / np.sqrt(self.rank)]).cuda()
+        self.scale = torch.Tensor([1. / np.sqrt(self.rank)]).cuda()
 
     def get_queries(self, queries):
         """Compute embedding and biases of queries."""

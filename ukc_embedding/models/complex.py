@@ -16,8 +16,7 @@ class BaseC(KGModel):
 
     def __init__(self, args):
         """Initialize a Complex KGModel."""
-        super(BaseC, self).__init__(args.sizes, args.rank, args.dropout, args.gamma, args.dtype, args.bias,
-                                    args.init_size)
+        super(BaseC, self).__init__(args.sizes, args.rank, args.sym, args.dropout, args.gamma, args.bias, args.init_size)
         assert self.rank % 2 == 0, "Complex models require even embedding dimension"
         self.rank = self.rank // 2
         self.embeddings = nn.ModuleList([

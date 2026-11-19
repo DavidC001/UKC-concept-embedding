@@ -17,8 +17,7 @@ class BaseE(KGModel):
     """
 
     def __init__(self, args):
-        super(BaseE, self).__init__(args.sizes, args.rank, args.dropout, args.gamma, args.dtype, args.bias,
-                                    args.init_size)
+        super(BaseE, self).__init__(args.sizes, args.rank, args.sym, args.dropout, args.gamma, args.bias, args.init_size)
         self.entity.weight.data = self.init_size * torch.randn((self.sizes[0], self.rank), dtype=self.data_type)
         self.rel.weight.data = self.init_size * torch.randn((self.sizes[1], self.rank), dtype=self.data_type)
 

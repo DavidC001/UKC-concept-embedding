@@ -5,6 +5,7 @@
 
 from collections import defaultdict
 from pathlib import Path
+import argparse
 
 def print_dataset_statistics(file_path: Path) -> None:
     unique_concepts = set()
@@ -23,5 +24,8 @@ def print_dataset_statistics(file_path: Path) -> None:
         print(f"{relation}: {count}")
         
 if __name__ == "__main__":
-    dataset_path = Path("data/UKC_old/train")
-    print_dataset_statistics(dataset_path)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset_path", default="data/graph/UKC_old/train", help="Path to the dataset directory")
+    args = parser.parse_args()
+    
+    print_dataset_statistics(Path(args.dataset_path))
