@@ -175,15 +175,20 @@ class KGModel(nn.Module, ABC):
                 scores = self.score(q, candidates, eval_mode=True)
                 targets = self.score(q, rhs, eval_mode=False)
 
-                # set filtered and true scores to -1e6 to be ignored
+                # ignore the filtered entities, the true target (scored separately in targets) and the query entity itself
+                # WE ARE ASSUMING NO SELF-LOOPS
                 for i, query in enumerate(these_queries):
-                    filter_out = filters[(query[0].item(), query[1].item())]
-                    filter_out += [queries[b_begin + i, 2].item()]
-                    scores[i, torch.LongTensor(filter_out)] = -1e6
+                    filter_out = filters[(query[0].item(), query[1].item())] + [
+                        queries[b_begin + i, 2].item(), query[0].item()]
+                    scores[i, torch.LongTensor(filter_out)] = float("-inf")
+                    
+                    
                 ranks[b_begin:b_begin + batch_size] += torch.sum(
                     (scores >= targets).float(), dim=1
                 ).cpu()
+                
                 b_begin += batch_size
+                
         return ranks
 
 
